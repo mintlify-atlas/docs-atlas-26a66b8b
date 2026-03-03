@@ -1,0 +1,159 @@
+{
+  "projectType": "ai-ml",
+  "projectName": "TensorRT-LLM",
+  "projectDescription": "High-performance LLM inference optimization library for NVIDIA GPUs with state-of-the-art optimizations including quantization, speculative decoding, and paged KV caching.",
+  "theme": "aspen",
+  "primaryColor": "#76B900",
+  "lightColor": "#90D03F",
+  "darkColor": "#5A9200",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/backends",
+              "concepts/optimization-techniques"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/trtllm-serve",
+              "deployment/llm-api",
+              "deployment/production",
+              "deployment/distributed-inference"
+            ]
+          },
+          {
+            "group": "Models",
+            "pages": [
+              "models/supported-models",
+              "models/model-configuration",
+              "models/custom-models"
+            ]
+          },
+          {
+            "group": "Features",
+            "pages": [
+              "features/quantization",
+              "features/speculative-decoding",
+              "features/kv-cache",
+              "features/attention-mechanisms",
+              "features/parallelism",
+              "features/lora",
+              "features/multimodal"
+            ]
+          },
+          {
+            "group": "Performance",
+            "pages": [
+              "performance/benchmarking",
+              "performance/optimization-guide",
+              "performance/profiling"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Python API",
+            "pages": [
+              "api/llm",
+              "api/sampling-params",
+              "api/request-output",
+              "api/tokenizer"
+            ]
+          },
+          {
+            "group": "CLI Tools",
+            "pages": [
+              "cli/trtllm-serve",
+              "cli/trtllm-bench",
+              "cli/trtllm-eval",
+              "cli/trtllm-build"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "config/llm-args",
+              "config/model-config",
+              "config/runtime-config"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Developer Guide",
+        "groups": [
+          {
+            "group": "Contributing",
+            "pages": [
+              "developer/contributing",
+              "developer/build-from-source",
+              "developer/coding-guidelines"
+            ]
+          },
+          {
+            "group": "Extending",
+            "pages": [
+              "developer/adding-models",
+              "developer/custom-kernels",
+              "developer/plugins"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "developer/autodeploy",
+              "developer/disaggregated-serving",
+              "developer/ci-overview"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "High-performance LLM inference on NVIDIA GPUs",
+    "Advanced quantization (FP8, FP4, INT4, AWQ, SmoothQuant)",
+    "Speculative decoding for throughput optimization",
+    "Paged KV cache and inflight batching",
+    "Custom optimized attention kernels",
+    "Multi-GPU and multi-node distributed inference",
+    "OpenAI-compatible server (trtllm-serve)",
+    "Python LLM API for easy integration",
+    "Support for 80+ model architectures",
+    "PyTorch and TensorRT backends",
+    "LoRA adapter support",
+    "Multimodal model support"
+  ],
+  "publicApiSurface": [
+    "tensorrt_llm.llmapi.LLM",
+    "tensorrt_llm.llmapi.LLM.generate",
+    "tensorrt_llm.llmapi.LLM.generate_async",
+    "tensorrt_llm.SamplingParams",
+    "tensorrt_llm.RequestOutput",
+    "tensorrt_llm.PreTrainedModel",
+    "trtllm-serve",
+    "trtllm-bench",
+    "trtllm-eval",
+    "trtllm-build",
+    "trtllm-prune",
+    "trtllm-refit"
+  ]
+}
