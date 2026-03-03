@@ -1,0 +1,268 @@
+---
+title: "Python Plugins"
+description: "Create Python plugins for TensorRT-LLM's TensorRT backend"
+---
+
+Python plugins allow you to define custom TensorRT operations using Python, which are then compiled into the TensorRT engine.
+
+<Note>
+  Python plugins are primarily used with the **TensorRT backend**. For the PyTorch backend, use [custom CUDA kernels](/developer/custom-kernels) instead.
+</Note>
+
+## Overview
+
+Python plugins provide a way to extend TensorRT-LLM with custom operations without writing C++ code.
+
+## Creating a Python Plugin
+
+Use the `@python_plugin` decorator from `tensorrt_llm.plugin`:
+
+```python
+from tensorrt_llm.plugin import python_plugin
+import torch
+
+@python_plugin("MyCustomOp", outputs=["output"])
+def my_custom_op(input_tensor, scale: float = 1.0):
+    """
+    Custom operation that scales input tensor.
+    
+    Args:
+        input_tensor: Input tensor to scale
+        scale: Scaling factor
+        
+    Returns:
+        Scaled tensor
+    """
+    return input_tensor * scale
+```
+
+## Plugin Registration
+
+The `@python_plugin` decorator handles:
+
+- **Automatic registration** with TensorRT plugin registry
+- **Type inference** for inputs and outputs
+- **Shape inference** during engine build
+- **Serialization** for engine save/load
+
+## Advanced Plugin Example
+
+```python
+import torch
+from tensorrt_llm.plugin import python_plugin
+
+@python_plugin(
+    "CustomAttention",
+    outputs=["attention_output", "attention_weights"],
+    workspace_size=1024 * 1024  # 1MB workspace
+)
+def custom_attention(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    mask: torch.Tensor = None
+):
+    """
+    Custom attention mechanism with optional masking.
+    """
+    # Compute attention scores
+    scores = torch.matmul(query, key.transpose(-2, -1))
+    scores = scores / math.sqrt(query.size(-1))
+    
+    # Apply mask if provided
+    if mask is not None:
+        scores = scores.masked_fill(mask == 0, float('-inf'))
+    
+    # Softmax and weighted sum
+    weights = torch.softmax(scores, dim=-1)
+    output = torch.matmul(weights, value)
+    
+    return output, weights
+```
+
+## Using Plugins in Models
+
+```python
+from tensorrt_llm.functional import python_plugin_call
+
+class MyModel(nn.Module):
+    def forward(self, x):
+        # Call Python plugin
+        output = python_plugin_call(
+            "MyCustomOp",
+            inputs=[x],
+            scale=2.0
+        )
+        return output
+```
+
+## Plugin Parameters
+
+<ParamField path="name" type="string" required>
+  Unique name for the plugin
+</ParamField>
+
+<ParamField path="outputs" type="List[string]" required>
+  List of output names
+</ParamField>
+
+<ParamField path="workspace_size" type="integer" default="0">
+  Workspace memory size in bytes for intermediate calculations
+</ParamField>
+
+<ParamField path="plugin_namespace" type="string" default="trtllm">
+  Plugin namespace for organization
+</ParamField>
+
+<ParamField path="plugin_version" type="string" default="1">
+  Plugin version identifier
+</ParamField>
+
+## Shape Inference
+
+Implement shape inference for dynamic shapes:
+
+```python
+@python_plugin("MyOp", outputs=["output"])
+class MyOpPlugin:
+    def __call__(self, input_tensor):
+        return input_tensor * 2
+    
+    def get_output_shapes(self, input_shapes):
+        """Define output shapes based on input shapes."""
+        return [input_shapes[0]]  # Output has same shape as input
+    
+    def get_output_dtypes(self, input_dtypes):
+        """Define output data types."""
+        return [input_dtypes[0]]  # Output has same dtype as input
+```
+
+## Best Practices
+
+<Accordion title="Minimize Data Transfers">
+Keep computations on GPU to avoid CPU-GPU transfers:
+
+```python
+@python_plugin("EfficientOp", outputs=["output"])
+def efficient_op(gpu_tensor):
+    # All operations stay on GPU
+    return gpu_tensor.relu().sum(dim=-1)
+```
+</Accordion>
+
+<Accordion title="Workspace Management">
+Use workspace for temporary buffers:
+
+```python
+@python_plugin("WorkspaceOp", outputs=["output"], workspace_size=1024*1024)
+def workspace_op(input, workspace):
+    # Use workspace for intermediate results
+    temp_buffer = workspace[:input.numel()]
+    # ... computations
+    return output
+```
+</Accordion>
+
+<Accordion title="Type Safety">
+Annotate types for better error messages:
+
+```python
+from typing import Optional
+import torch
+
+@python_plugin("TypedOp", outputs=["output"])
+def typed_op(
+    input: torch.Tensor,
+    scale: float,
+    bias: Optional[torch.Tensor] = None
+) -> torch.Tensor:
+    result = input * scale
+    if bias is not None:
+        result = result + bias
+    return result
+```
+</Accordion>
+
+## Plugin Examples
+
+### Custom Activation Function
+
+```python
+@python_plugin("SwishActivation", outputs=["output"])
+def swish_activation(x: torch.Tensor, beta: float = 1.0):
+    """Swish activation: x * sigmoid(beta * x)"""
+    return x * torch.sigmoid(beta * x)
+```
+
+### Fused Operations
+
+```python
+@python_plugin("FusedLayerNormGELU", outputs=["output"])
+def fused_ln_gelu(input: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor):
+    """Fused LayerNorm + GELU activation."""
+    # LayerNorm
+    normalized = F.layer_norm(input, input.shape[-1:], weight, bias)
+    
+    # GELU
+    return F.gelu(normalized)
+```
+
+## Debugging Plugins
+
+Enable plugin debugging:
+
+```python
+import os
+os.environ['TRTLLM_DEBUG_PLUGINS'] = '1'
+
+# Your plugin will now print debug information
+```
+
+View plugin calls during inference:
+
+```python
+from tensorrt_llm.logger import logger
+logger.set_level('debug')
+
+# Plugin execution will be logged
+```
+
+## Limitations
+
+<Warning>
+  **Performance**: Python plugins may be slower than native C++ plugins due to Python overhead.
+  
+  **Compatibility**: Python plugins are only supported with the TensorRT backend.
+  
+  **Deployment**: Python plugins require the Python runtime at inference time.
+</Warning>
+
+## Migration to C++ Plugins
+
+For production deployments, consider migrating to C++ plugins:
+
+```cpp
+// custom_plugin.cpp
+class MyPluginCreator : public BaseCreator {
+    const char* getPluginName() const override {
+        return "MyCustomOp";
+    }
+    
+    IPluginV2* createPlugin(const char* name, const PluginFieldCollection* fc) override {
+        // Create plugin instance
+    }
+};
+
+REGISTER_TENSORRT_PLUGIN(MyPluginCreator);
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Custom Kernels" icon="code" href="/developer/custom-kernels">
+    Learn about CUDA kernel development
+  </Card>
+  <Card title="Model Architecture" icon="sitemap" href="/concepts/architecture">
+    Understand TensorRT-LLM architecture
+  </Card>
+</CardGroup>

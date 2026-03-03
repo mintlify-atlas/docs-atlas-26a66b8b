@@ -1,0 +1,433 @@
+---
+title: LoRA (Low-Rank Adaptation)
+description: Parameter-efficient fine-tuning with dynamic LoRA adapter loading, multi-LoRA support, and quantization compatibility
+---
+
+LoRA (Low-Rank Adaptation) is a parameter-efficient fine-tuning technique that enables adapting large language models to specific tasks without modifying the original model weights. Instead of fine-tuning all parameters, LoRA introduces small trainable rank decomposition matrices that are added to existing weights during inference.
+
+## What is LoRA?
+
+LoRA decomposes weight updates into low-rank matrices:
+
+```
+W' = W + BA
+```
+
+Where:
+- `W` is the original pre-trained weight matrix
+- `B` and `A` are low-rank matrices (rank `r << min(d_in, d_out)`)
+- Only `B` and `A` are trained and stored (massive parameter reduction)
+
+<Info>
+For a 7B parameter model, a LoRA adapter with rank 8 typically adds only ~8-16M parameters (0.1-0.2% of original model size).
+</Info>
+
+## Quick Start
+
+### Single LoRA Adapter
+
+```python
+from tensorrt_llm import LLM
+from tensorrt_llm.lora_manager import LoraConfig
+from tensorrt_llm.executor.request import LoRARequest
+from tensorrt_llm.sampling_params import SamplingParams
+
+# Configure LoRA
+lora_config = LoraConfig(
+    lora_dir=["/path/to/lora/adapter"],
+    max_lora_rank=8,
+    max_loras=1,
+    max_cpu_loras=1
+)
+
+# Initialize LLM with LoRA support
+llm = LLM(
+    model="meta-llama/Llama-3.1-8B-Instruct",
+    lora_config=lora_config
+)
+
+# Create LoRA request
+lora_request = LoRARequest("my-lora-task", 0, "/path/to/lora/adapter")
+
+# Generate with LoRA
+prompts = ["Translate to French: Hello, how are you?"]
+sampling_params = SamplingParams(max_tokens=50)
+
+outputs = llm.generate(
+    prompts,
+    sampling_params,
+    lora_request=[lora_request]
+)
+
+for output in outputs:
+    print(output.text)
+```
+
+### Multi-LoRA Support
+
+Serve multiple LoRA adapters simultaneously:
+
+```python
+from tensorrt_llm import LLM
+from tensorrt_llm.lora_manager import LoraConfig
+from tensorrt_llm.executor.request import LoRARequest
+from tensorrt_llm.sampling_params import SamplingParams
+
+# Configure for multiple LoRA adapters
+lora_config = LoraConfig(
+    lora_target_modules=['attn_q', 'attn_k', 'attn_v'],
+    max_lora_rank=8,
+    max_loras=4,        # Up to 4 LoRAs active in GPU simultaneously
+    max_cpu_loras=8     # Up to 8 LoRAs cached in CPU memory
+)
+
+llm = LLM(
+    model="meta-llama/Llama-3.1-8B-Instruct",
+    lora_config=lora_config
+)
+
+# Create multiple LoRA requests
+lora_req1 = LoRARequest("translation", 0, "/path/to/translation_adapter")
+lora_req2 = LoRARequest("summarization", 1, "/path/to/summarization_adapter")
+
+prompts = [
+    "Translate to French: Hello world",
+    "Summarize: This is a long document about AI..."
+]
+
+# Apply different LoRAs to different prompts
+outputs = llm.generate(
+    prompts,
+    sampling_params,
+    lora_request=[lora_req1, lora_req2]
+)
+```
+
+## Configuration Options
+
+### LoraConfig Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `lora_dir` | List[str] | Paths to LoRA adapter directories |
+| `lora_target_modules` | List[str] | Which modules to apply LoRA to (e.g., `['attn_q', 'attn_k', 'attn_v']`) |
+| `max_lora_rank` | int | Maximum rank of LoRA adapters |
+| `max_loras` | int | Maximum number of LoRAs active on GPU simultaneously |
+| `max_cpu_loras` | int | Maximum number of LoRAs cached in CPU memory |
+| `lora_ckpt_source` | str | Format of LoRA checkpoint: `"hf"` (HuggingFace) or `"nemo"` (NeMo) |
+| `trtllm_modules_to_hf_modules` | Dict | Mapping from TRT-LLM module names to HuggingFace names |
+
+<Note>
+`max_cpu_loras` should be >= `max_loras`. The system maintains a cache in CPU memory and swaps LoRAs to GPU as needed.
+</Note>
+
+## Advanced Usage
+
+### LoRA with Quantization
+
+LoRA works seamlessly with quantized models:
+
+```python
+from tensorrt_llm import LLM
+from tensorrt_llm.lora_manager import LoraConfig
+from tensorrt_llm.models.modeling_utils import QuantConfig
+from tensorrt_llm.quantization.mode import QuantAlgo
+
+# Configure FP8 quantization
+quant_config = QuantConfig(
+    quant_algo=QuantAlgo.FP8,
+    kv_cache_quant_algo=QuantAlgo.FP8
+)
+
+# Configure LoRA
+lora_config = LoraConfig(
+    lora_dir=["/path/to/adapter"],
+    max_lora_rank=8,
+    max_loras=1
+)
+
+# LoRA works with quantized models
+llm = LLM(
+    model="meta-llama/Llama-3.1-8B-Instruct",
+    quant_config=quant_config,
+    lora_config=lora_config
+)
+```
+
+<Info>
+LoRA adapters are applied in full precision (FP16/BF16) even when the base model is quantized. This preserves adapter quality while maintaining memory savings from quantization.
+</Info>
+
+### NeMo LoRA Format
+
+Support for NeMo-format LoRA checkpoints:
+
+```python
+from tensorrt_llm.lora_manager import LoraConfig
+from tensorrt_llm.executor.request import LoRARequest
+
+# Configure for NeMo format
+lora_config = LoraConfig(
+    lora_dir=["/path/to/nemo/lora"],
+    lora_ckpt_source="nemo",
+    max_lora_rank=8
+)
+
+lora_request = LoRARequest(
+    "nemo-task",
+    0,
+    "/path/to/nemo/lora",
+    lora_ckpt_source="nemo"
+)
+```
+
+### Cache Management
+
+Fine-tune LoRA cache sizes for optimal performance:
+
+```python
+from tensorrt_llm.llmapi.llm_args import PeftCacheConfig
+
+# Customize cache sizes
+peft_cache_config = PeftCacheConfig(
+    host_cache_size=1024*1024*1024,  # 1GB CPU cache for LoRA weights
+    device_cache_percent=0.1          # Use 10% of free GPU memory for LoRA cache
+)
+
+llm = LLM(
+    model="meta-llama/Llama-3.1-8B-Instruct",
+    lora_config=lora_config,
+    peft_cache_config=peft_cache_config
+)
+```
+
+<AccordionGroup>
+  <Accordion title="host_cache_size">
+    Controls CPU memory allocated for caching inactive LoRA adapters. Larger values allow more adapters to be cached, reducing load time when switching between adapters.
+  </Accordion>
+  
+  <Accordion title="device_cache_percent">
+    Percentage of free GPU memory dedicated to the LoRA adapter cache. Higher values allow more adapters to be active simultaneously but reduce memory available for KV cache.
+  </Accordion>
+</AccordionGroup>
+
+## Serving with trtllm-serve
+
+### YAML Configuration
+
+Create a `config.yaml` file:
+
+```yaml
+lora_config:
+  lora_target_modules: ['attn_q', 'attn_k', 'attn_v']
+  max_lora_rank: 8
+  max_loras: 4
+  max_cpu_loras: 8
+```
+
+### Starting the Server
+
+```bash
+trtllm-serve meta-llama/Llama-3.1-8B-Instruct --config config.yaml
+```
+
+### Client Usage
+
+Send requests with LoRA adapters:
+
+<Tabs>
+  <Tab title="Python (OpenAI SDK)">
+    ```python
+    import openai
+    
+    client = openai.OpenAI(
+        base_url="http://localhost:8000/v1",
+        api_key="dummy"
+    )
+    
+    response = client.completions.create(
+        model="meta-llama/Llama-3.1-8B-Instruct",
+        prompt="What is the capital city of France?",
+        max_tokens=20,
+        extra_body={
+            "lora_request": {
+                "lora_name": "lora-example-0",
+                "lora_int_id": 0,
+                "lora_path": "/path/to/lora_adapter"
+            }
+        },
+    )
+    
+    print(response.choices[0].text)
+    ```
+  </Tab>
+  
+  <Tab title="cURL">
+    ```bash
+    curl http://localhost:8000/v1/completions \
+      -H "Content-Type: application/json" \
+      -d '{
+        "model": "meta-llama/Llama-3.1-8B-Instruct",
+        "prompt": "What is the capital city of France?",
+        "max_tokens": 20,
+        "lora_request": {
+          "lora_name": "lora-example-0",
+          "lora_int_id": 0,
+          "lora_path": "/path/to/lora_adapter"
+        }
+      }'
+    ```
+  </Tab>
+</Tabs>
+
+## Benchmarking with trtllm-bench
+
+### YAML Configuration
+
+```yaml
+lora_config:
+  lora_dir:
+    - /path/to/loras/0
+    - /path/to/loras/1
+  max_lora_rank: 64
+  max_loras: 8
+  max_cpu_loras: 16
+  lora_target_modules:
+    - attn_q
+    - attn_k
+    - attn_v
+  trtllm_modules_to_hf_modules:
+    attn_q: q_proj
+    attn_k: k_proj
+    attn_v: v_proj
+```
+
+### Run Benchmark
+
+```bash
+trtllm-bench \
+  --model meta-llama/Llama-3.1-8B-Instruct \
+  throughput \
+  --dataset /path/to/dataset.json \
+  --config config.yaml \
+  --num_requests 64 \
+  --concurrency 16
+```
+
+## Target Modules
+
+Commonly used LoRA target modules:
+
+<Tabs>
+  <Tab title="Attention Only">
+    ```python
+    lora_target_modules = ['attn_q', 'attn_k', 'attn_v']
+    ```
+    - Lightweight adaptation
+    - Good for task-specific tuning
+    - Minimal memory overhead
+  </Tab>
+  
+  <Tab title="Attention + Output">
+    ```python
+    lora_target_modules = ['attn_q', 'attn_k', 'attn_v', 'attn_dense']
+    ```
+    - More expressive adaptation
+    - Better for complex tasks
+    - Moderate memory overhead
+  </Tab>
+  
+  <Tab title="Full (Attention + FFN)">
+    ```python
+    lora_target_modules = [
+        'attn_q', 'attn_k', 'attn_v', 'attn_dense',
+        'mlp_h_to_4h', 'mlp_4h_to_h'
+    ]
+    ```
+    - Maximum adaptation capacity
+    - Best for domain adaptation
+    - Higher memory overhead
+  </Tab>
+</Tabs>
+
+<Note>
+Module names may vary by model architecture. Use `trtllm_modules_to_hf_modules` to map TRT-LLM names to HuggingFace names if needed.
+</Note>
+
+## Performance Considerations
+
+<AccordionGroup>
+  <Accordion title="Rank Selection">
+    **Lower ranks (4-8):**
+    - Faster inference
+    - Smaller adapter files
+    - Sufficient for most tasks
+    
+    **Higher ranks (16-64):**
+    - Better adaptation capacity
+    - Slower inference
+    - Use for complex domain adaptation
+  </Accordion>
+  
+  <Accordion title="Number of Active LoRAs">
+    - `max_loras` controls GPU memory usage
+    - More active LoRAs → less memory for KV cache
+    - Start with 4-8 and tune based on workload
+    - Use `max_cpu_loras` for larger adapter pools
+  </Accordion>
+  
+  <Accordion title="Cache Tuning">
+    - Increase `host_cache_size` if frequently switching adapters
+    - Increase `device_cache_percent` if many adapters are used concurrently
+    - Monitor adapter swap times and adjust accordingly
+  </Accordion>
+</AccordionGroup>
+
+## Best Practices
+
+<Steps>
+  <Step title="Start with attention-only modules">
+    Begin with `['attn_q', 'attn_k', 'attn_v']` for most tasks. This provides good adaptation with minimal overhead.
+  </Step>
+  
+  <Step title="Use rank 8 as baseline">
+    Rank 8 offers a good balance between adaptation capacity and inference speed for most use cases.
+  </Step>
+  
+  <Step title="Configure cache sizes appropriately">
+    Set `max_cpu_loras` to 2-4x your `max_loras` to allow efficient adapter swapping.
+  </Step>
+  
+  <Step title="Combine with quantization">
+    Use FP8 or INT4 quantization for the base model to maximize memory savings while maintaining LoRA quality.
+  </Step>
+  
+  <Step title="Monitor adapter usage">
+    Track which adapters are most frequently used and prioritize keeping them in GPU memory.
+  </Step>
+</Steps>
+
+## Limitations
+
+<Warning>
+- LoRA adapters must have rank ≤ `max_lora_rank` configured at model load time
+- All adapters must target the same modules specified in `lora_target_modules`
+- Adapter switching has a small overhead (loading from CPU/disk to GPU)
+- Maximum number of simultaneously active adapters is limited by GPU memory
+</Warning>
+
+## Additional Resources
+
+<CardGroup cols={2}>
+  <Card title="LoRA Paper" icon="file-pdf" href="https://arxiv.org/abs/2106.09685">
+    Original LoRA: Low-Rank Adaptation of Large Language Models
+  </Card>
+  
+  <Card title="HuggingFace PEFT" icon="huggingface" href="https://huggingface.co/docs/peft/">
+    Training LoRA adapters with PEFT library
+  </Card>
+  
+  <Card title="LoRA Adapters Hub" icon="database" href="https://huggingface.co/models?other=lora">
+    Browse pre-trained LoRA adapters
+  </Card>
+</CardGroup>

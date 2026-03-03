@@ -1,0 +1,344 @@
+---
+title: trtllm-bench
+description: Benchmark TensorRT-LLM models for throughput and latency performance
+---
+
+Benchmark TensorRT-LLM models for throughput and latency performance. Supports multiple backends (PyTorch, TensorRT, AutoDeploy) and various benchmarking modes.
+
+## Usage
+
+```bash
+trtllm-bench --model MODEL [OPTIONS] COMMAND
+```
+
+## Global Options
+
+<ParamField path="--model" type="string" required>
+  The HuggingFace name of the model to benchmark. Alias: `-m`
+</ParamField>
+
+<ParamField path="--model_path" type="string">
+  Path to a HuggingFace checkpoint directory for loading model components
+</ParamField>
+
+<ParamField path="--workspace" type="string" default="/tmp">
+  The directory to store benchmarking intermediate files. Alias: `-w`
+</ParamField>
+
+<ParamField path="--log_level" type="string" default="info">
+  The logging level. Choices: `verbose`, `info`, `warning`, `error`, `internal_error`
+</ParamField>
+
+<ParamField path="--revision" type="string">
+  The revision to use for the HuggingFace model (branch name, tag name, or commit id)
+</ParamField>
+
+## Commands
+
+### throughput
+
+Run a throughput benchmark to measure maximum request processing capacity.
+
+```bash
+trtllm-bench --model MODEL throughput [OPTIONS]
+```
+
+#### Throughput Options
+
+<ParamField path="--backend" type="string" default="pytorch">
+  Backend to use for benchmark. Choices: `pytorch`, `tensorrt`, `_autodeploy`
+</ParamField>
+
+<ParamField path="--engine_dir" type="path">
+  Path to a serialized TRT-LLM engine (for TensorRT backend)
+</ParamField>
+
+<ParamField path="--dataset" type="path" required>
+  Path to dataset file for benchmarking. Use `prepare-dataset` command to generate
+</ParamField>
+
+<ParamField path="--num_requests" type="integer" default="0">
+  Number of requests to cap benchmark run at. If not specified or set to 0, it will be the length of dataset
+</ParamField>
+
+<ParamField path="--warmup" type="integer" default="2">
+  Number of requests to warm up benchmark
+</ParamField>
+
+<ParamField path="--max_batch_size" type="integer">
+  Maximum runtime batch size to run the engine with
+</ParamField>
+
+<ParamField path="--max_num_tokens" type="integer">
+  Maximum runtime tokens that an engine can accept
+</ParamField>
+
+<ParamField path="--max_seq_len" type="integer">
+  Maximum sequence length
+</ParamField>
+
+<ParamField path="--beam_width" type="integer" default="1">
+  Number of search beams
+</ParamField>
+
+<ParamField path="--kv_cache_free_gpu_mem_fraction" type="float" default="0.9">
+  The percentage of memory to use for KV Cache after model load
+</ParamField>
+
+<ParamField path="--tp" type="integer" default="1">
+  Tensor parallelism size
+</ParamField>
+
+<ParamField path="--pp" type="integer" default="1">
+  Pipeline parallelism size
+</ParamField>
+
+<ParamField path="--ep" type="integer">
+  Expert parallelism size (for MoE models)
+</ParamField>
+
+<ParamField path="--config" type="string">
+  Path to a YAML file that overwrites the parameters. Can be specified as either `--config` or `--extra_llm_api_options`
+</ParamField>
+
+<ParamField path="--sampler_options" type="path">
+  Path to a YAML file that sets sampler options
+</ParamField>
+
+<ParamField path="--no_skip_tokenizer_init" type="boolean" default="false">
+  Do not skip tokenizer initialization when loading the model (required for VLM models)
+</ParamField>
+
+<ParamField path="--eos_id" type="integer" default="-1">
+  Set the end-of-sequence token for the benchmark. Set to -1 to disable EOS
+</ParamField>
+
+<ParamField path="--modality" type="string">
+  Modality of the multimodal requests. Choices: `image`, `video`
+</ParamField>
+
+<ParamField path="--image_data_format" type="string" default="pt">
+  Format of the image data for multimodal models. Choices: `pt`, `pil`
+</ParamField>
+
+<ParamField path="--data_device" type="string" default="cuda">
+  Device to load the multimodal data on. Choices: `cuda`, `cpu`
+</ParamField>
+
+<ParamField path="--max_input_len" type="integer" default="4096">
+  Maximum input sequence length to use for multimodal models
+</ParamField>
+
+<ParamField path="--target_input_len" type="integer">
+  Target (average) input length for tuning heuristics
+</ParamField>
+
+<ParamField path="--target_output_len" type="integer">
+  Target (average) sequence length for tuning heuristics
+</ParamField>
+
+<ParamField path="--custom_module_dirs" type="path" multiple>
+  Paths to custom module directories to import
+</ParamField>
+
+### latency
+
+Run a latency benchmark to measure per-request response times.
+
+```bash
+trtllm-bench --model MODEL latency [OPTIONS]
+```
+
+#### Latency Options
+
+<ParamField path="--backend" type="string" default="pytorch">
+  Backend to use for benchmark. Choices: `pytorch`, `tensorrt`, `_autodeploy`
+</ParamField>
+
+<ParamField path="--engine_dir" type="path">
+  Path to a serialized TRT-LLM engine
+</ParamField>
+
+<ParamField path="--dataset" type="path">
+  Path to dataset file for benchmarking
+</ParamField>
+
+<ParamField path="--num_requests" type="integer" default="0">
+  Number of requests to cap benchmark run at. Minimum between value and length of dataset
+</ParamField>
+
+<ParamField path="--warmup" type="integer" default="2">
+  Number of requests to warm up benchmark
+</ParamField>
+
+<ParamField path="--concurrency" type="integer" default="1">
+  Desired concurrency rate (number of requests processing at the same time), less than or equal to 0 for no concurrency limit
+</ParamField>
+
+<ParamField path="--beam_width" type="integer" default="1">
+  Number of search beams
+</ParamField>
+
+<ParamField path="--kv_cache_free_gpu_mem_fraction" type="float" default="0.9">
+  The percentage of memory to use for KV Cache after model load
+</ParamField>
+
+<ParamField path="--max_seq_len" type="integer">
+  Maximum sequence length
+</ParamField>
+
+<ParamField path="--tp" type="integer" default="1">
+  Tensor parallelism size
+</ParamField>
+
+<ParamField path="--pp" type="integer" default="1">
+  Pipeline parallelism size
+</ParamField>
+
+<ParamField path="--ep" type="integer">
+  Expert parallelism size
+</ParamField>
+
+<ParamField path="--config" type="string">
+  Path to a YAML file that overwrites the parameters
+</ParamField>
+
+<ParamField path="--sampler_options" type="path">
+  Path to a YAML file that sets sampler options
+</ParamField>
+
+<ParamField path="--modality" type="string">
+  Modality of the multimodal requests. Choices: `image`, `video`
+</ParamField>
+
+<ParamField path="--max_input_len" type="integer" default="4096">
+  Maximum input sequence length to use for multimodal models
+</ParamField>
+
+<ParamField path="--medusa_choices" type="path">
+  Path to a YAML file that defines the Medusa tree (for speculative decoding)
+</ParamField>
+
+<ParamField path="--report_json" type="path">
+  Path where report should be written to
+</ParamField>
+
+<ParamField path="--iteration_log" type="path">
+  Path where iteration logging is written to
+</ParamField>
+
+### prepare-dataset
+
+Prepare a dataset for benchmarking.
+
+```bash
+trtllm-bench --model MODEL prepare-dataset [OPTIONS]
+```
+
+### build
+
+Build a TensorRT engine for benchmarking.
+
+```bash
+trtllm-bench --model MODEL build [OPTIONS]
+```
+
+## Examples
+
+### Throughput Benchmark
+
+Run a throughput benchmark with a prepared dataset:
+
+```bash
+trtllm-bench --model meta-llama/Llama-3.1-8B-Instruct \
+  throughput \
+  --dataset dataset.json \
+  --backend pytorch
+```
+
+### Latency Benchmark
+
+Measure single-request latency:
+
+```bash
+trtllm-bench --model meta-llama/Llama-3.1-8B-Instruct \
+  latency \
+  --dataset dataset.json \
+  --concurrency 1
+```
+
+### Multi-GPU Throughput
+
+Benchmark with tensor parallelism:
+
+```bash
+trtllm-bench --model meta-llama/Llama-3.1-70B-Instruct \
+  throughput \
+  --dataset dataset.json \
+  --tp 4 \
+  --max_batch_size 256
+```
+
+### TensorRT Engine Benchmark
+
+Benchmark a pre-built TensorRT engine:
+
+```bash
+trtllm-bench --model meta-llama/Llama-3.1-8B-Instruct \
+  throughput \
+  --engine_dir ./engine_outputs \
+  --dataset dataset.json \
+  --backend tensorrt
+```
+
+### With Custom Configuration
+
+Use a YAML configuration file:
+
+```bash
+trtllm-bench --model meta-llama/Llama-3.1-8B-Instruct \
+  throughput \
+  --dataset dataset.json \
+  --config bench_config.yaml
+```
+
+### Prepare Dataset
+
+Generate a benchmark dataset:
+
+```bash
+trtllm-bench --model meta-llama/Llama-3.1-8B-Instruct \
+  prepare-dataset \
+  --output dataset.json \
+  --num-requests 1000
+```
+
+### High Concurrency Latency Test
+
+Test latency under load:
+
+```bash
+trtllm-bench --model meta-llama/Llama-3.1-8B-Instruct \
+  latency \
+  --dataset dataset.json \
+  --concurrency 32 \
+  --num_requests 500
+```
+
+### Multimodal Benchmark
+
+Benchmark a vision-language model:
+
+```bash
+trtllm-bench --model llava-hf/llava-1.5-7b-hf \
+  throughput \
+  --dataset vlm_dataset.json \
+  --modality image \
+  --no_skip_tokenizer_init
+```
+
+## Related Commands
+
+- [trtllm-serve](/cli/trtllm-serve) - Serve models via API
+- [trtllm-build](/cli/trtllm-build) - Build TensorRT engines
+- [trtllm-eval](/cli/trtllm-eval) - Evaluate model accuracy

@@ -1,0 +1,724 @@
+---
+title: 'Optimization Techniques'
+description: 'Advanced performance optimizations in TensorRT-LLM'
+icon: 'gauge-high'
+---
+
+TensorRT-LLM achieves industry-leading inference performance through a suite of sophisticated optimization techniques. Understanding these optimizations helps you maximize throughput and minimize latency.
+
+## Core Optimizations Overview
+
+<CardGroup cols={2}>
+  <Card title="In-Flight Batching" icon="layer-group">
+    **Continuous batching** for higher GPU utilization
+    
+    Process context and generation phases together
+  </Card>
+
+  <Card title="Paged KV Cache" icon="memory">
+    **Dynamic memory allocation** with cross-request reuse
+    
+    Reduce memory waste and enable sharing
+  </Card>
+
+  <Card title="Custom Attention Kernels" icon="microchip">
+    **Fused attention operations** for maximum efficiency
+    
+    FlashAttention-2 and XQA optimizations
+  </Card>
+
+  <Card title="CUDA Graphs" icon="diagram-project">
+    **Capture and replay** sequences of GPU operations
+    
+    Minimize CPU overhead
+  </Card>
+</CardGroup>
+
+---
+
+## In-Flight Batching (Continuous Batching)
+
+In-flight batching, also known as **continuous batching** or **iteration-level batching**, allows TensorRT-LLM to process requests in different stages (context vs. generation) within the same batch.
+
+### Traditional vs. In-Flight Batching
+
+<Tabs>
+  <Tab title="Traditional Batching">
+    ```
+    Batch 1: [Request A - Context] [Request B - Context]
+    Wait for all context phases to complete...
+    Batch 2: [Request A - Gen 1] [Request B - Gen 1]
+    Batch 3: [Request A - Gen 2] [Request B - Gen 2]
+    ...
+    
+    ❌ GPU idle time between context and generation
+    ❌ Cannot add new requests until all complete
+    ❌ Poor GPU utilization
+    ```
+  </Tab>
+
+  <Tab title="In-Flight Batching">
+    ```
+    Batch 1: [Request A - Context] [Request B - Context]
+    Batch 2: [Request A - Gen 1] [Request B - Gen 1] [Request C - Context]
+    Batch 3: [Request A - Gen 2] [Request B - Gen 2] [Request C - Gen 1] [Request D - Context]
+    ...
+    
+    ✅ Mix context and generation in same batch
+    ✅ Add new requests anytime
+    ✅ Maximum GPU utilization
+    ```
+  </Tab>
+</Tabs>
+
+### How It Works
+
+<Steps>
+  <Step title="Mixed-Phase Batching">
+    The scheduler can batch:
+    - **Context phase requests**: Processing all prompt tokens (first pass)
+    - **Generation phase requests**: Producing one token per step
+    
+    These run together in a single forward pass.
+  </Step>
+
+  <Step title="Dynamic Request Management">
+    - New requests can join at any time
+    - Completed requests immediately free resources
+    - No waiting for batch boundaries
+  </Step>
+
+  <Step title="Packed Tensors">
+    All tensors are **packed** (no padding) for efficiency:
+    ```
+    Traditional: [Req1 tokens + padding] [Req2 tokens + padding]
+    Packed:      [Req1 tokens][Req2 tokens][Req3 tokens]
+    ```
+  </Step>
+</Steps>
+
+<Note>
+**Implementation Detail**: Context phase requests must appear before generation phase requests in the input tensor. This constraint is enforced by the `Scheduler` component in `tensorrt_llm/_torch/pyexecutor/scheduler/scheduler.py`.
+</Note>
+
+### Scheduling Parameters
+
+Two key parameters control in-flight batching behavior:
+
+<ParamField path="max_batch_size" type="int">
+  Maximum number of **requests** that can be scheduled simultaneously
+  
+  - Controls how many concurrent requests the engine handles
+  - Set high to maximize throughput
+  - Tune at runtime without rebuilding
+</ParamField>
+
+<ParamField path="max_num_tokens" type="int" default="8192">
+  Maximum number of **tokens** processed in a single forward pass (after removing padding)
+  
+  - Balances throughput vs. latency
+  - Higher = better GPU utilization but higher TTFT (time to first token)
+  - Lower = faster individual requests but lower throughput
+  
+  **Tuning guidance**:
+  - Start with 8192 (default)
+  - Increase if GPU utilization is low
+  - Decrease if TTFT SLOs are missed
+</ParamField>
+
+### Visual Example
+
+The scheduler balances `max_batch_size` and `max_num_tokens` constraints:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ Scheduler State: max_batch_size=4, max_num_tokens=12       │
+├─────────────────────────────────────────────────────────────┤
+│ Waiting Queue:                                              │
+│   Request 1 (5 prompt tokens)                               │
+│   Request 2 (5 prompt tokens)                               │
+│   Request 3 (4 prompt tokens)  ← Cannot fit (12 token limit)│
+│   Request 4 (3 prompt tokens)                               │
+├─────────────────────────────────────────────────────────────┤
+│ ✅ Scheduled: Request 1 + Request 2 (10 tokens total)       │
+└─────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────┐
+│ Next Iteration: After Request 1 & 2 enter generation       │
+├─────────────────────────────────────────────────────────────┤
+│ Active Requests:                                            │
+│   Request 1 (generation - 1 token)                          │
+│   Request 2 (generation - 1 token)                          │
+│ Waiting Queue:                                              │
+│   Request 3 (4 prompt tokens)                               │
+│   Request 4 (3 prompt tokens)                               │
+├─────────────────────────────────────────────────────────────┤
+│ ✅ Scheduled: Req 1 + Req 2 + Req 3 + Req 4                 │
+│    (1 + 1 + 4 + 3 = 9 tokens, batch_size = 4)               │
+└─────────────────────────────────────────────────────────────┘
+```
+
+<Info>
+See the [Paged Attention, IFB, and Request Scheduling](https://github.com/NVIDIA/TensorRT-LLM/blob/main/docs/source/features/paged-attention-ifb-scheduler.md) documentation for detailed scheduler visualizations.
+</Info>
+
+### Chunked Context (Chunked Prefill)
+
+To further improve scheduling flexibility, TensorRT-LLM supports **chunked context**:
+
+- Splits long prompts into multiple chunks
+- Allows large prompts to be interleaved with generation phase requests
+- Prevents long prompts from blocking the scheduler
+- Enables more stable TTFT across requests
+
+```python
+from tensorrt_llm import LLM
+
+llm = LLM(
+    model="meta-llama/Llama-3.2-1B",
+    # Chunked context automatically enabled with paged KV cache
+)
+```
+
+<Check>
+**Recommendation**: Always enable chunked context (enabled by default with paged KV cache). It improves scheduling efficiency with minimal performance impact.
+</Check>
+
+---
+
+## Paged KV Cache
+
+The paged KV cache is one of the most impactful optimizations in TensorRT-LLM, enabling:
+1. **Dynamic memory allocation** - no wasted memory on padding
+2. **Cross-request reuse** - share cached blocks between requests with common prefixes
+3. **Memory offloading** - keep blocks in CPU memory when GPU is full
+
+### Architecture
+
+<Tabs>
+  <Tab title="Contiguous KV Cache (Inefficient)">
+    ```
+    Shape: [max_batch_size, 2, num_heads, max_seq_len, head_dim]
+    
+    Request A (10 tokens):
+    [KV blocks for 10 tokens | ......... unused space (up to max_seq_len) ...........]
+    
+    Request B (50 tokens):
+    [KV blocks for 50 tokens | ........ unused space (up to max_seq_len) ........]
+    
+    ❌ Wastes memory for short sequences
+    ❌ Cannot share between requests
+    ❌ Fixed allocation
+    ```
+  </Tab>
+
+  <Tab title="Paged KV Cache (Efficient)">
+    ```
+    Pool of fixed-size blocks (e.g., 64 tokens per block)
+    
+    Block Pool:
+    [Block 0][Block 1][Block 2][Block 3][Block 4][Block 5][Block 6]...
+       ↓        ↓        ↓        ↓
+    Request A (10 tokens):  → Block 0 (partially filled)
+    Request B (130 tokens): → Block 1 → Block 2 → Block 3 (partially filled)
+    Request C (10 tokens):  → Block 0 (shared! same prefix as A)
+    
+    ✅ Allocate only what's needed
+    ✅ Share blocks with matching prefixes
+    ✅ Dynamic allocation/deallocation
+    ```
+  </Tab>
+</Tabs>
+
+### Key Features
+
+<AccordionGroup>
+  <Accordion title="Block-Based Allocation" icon="cubes">
+    - KV cache divided into fixed-size **blocks** (configurable, must be power of 2)
+    - Blocks assigned to requests on-demand
+    - Typical block size: 16-128 tokens per block
+    - Multiple transformer layers packed into each block
+  </Accordion>
+
+  <Accordion title="Cross-Request Reuse" icon="recycle">
+    **Radix Tree Storage**: Filled blocks are stored in a radix tree structure, allowing later requests to reuse cached computations.
+
+    Example:
+    ```
+    Request 1: "Explain quantum computing in simple terms"
+    Request 2: "Explain quantum computing in detail"
+    
+    → Request 2 reuses blocks for "Explain quantum computing in"
+    → Only computes tokens starting from "detail"
+    ```
+
+    **Benefits**:
+    - Reduces redundant computation
+    - Saves GPU memory (blocks shared, not duplicated)
+    - Especially effective for:
+      - System prompts (reused across many requests)
+      - Common prefixes in multi-turn conversations
+      - RAG workloads (similar context documents)
+  </Accordion>
+
+  <Accordion title="Prioritized Eviction" icon="arrow-down-wide-short">
+    When memory is full, blocks are evicted using **prioritized LRU**:
+
+    - Each block has a priority (0-100)
+    - Lower priority blocks evicted first
+    - Within same priority, least-recently-used evicted first
+
+    **Retention Policies**: Control per-request block priorities
+    ```python
+    from tensorrt_llm.llmapi import KvCacheRetentionConfig
+
+    retention = KvCacheRetentionConfig(
+        # Keep first 100 tokens (system prompt) with high priority
+        token_range_retention=[
+            TokenRangeRetentionConfig(
+                token_range=(0, 100),
+                priority=90,  # High priority
+                duration_ms=None  # Never expire
+            )
+        ],
+        # Regular tokens get default priority
+        decode_retention_policy=35,  # Default priority
+    )
+    ```
+  </Accordion>
+
+  <Accordion title="Memory Offloading" icon="download">
+    Before evicting blocks from GPU memory, optionally offload to CPU memory:
+
+    - Blocks remain reusable (copied back when needed)
+    - Controlled by `host_cache_size` parameter
+    - Blocks below `secondary_offload_min_priority` are evicted directly
+
+    ```python
+    from tensorrt_llm.llmapi import KvCacheConfig
+
+    kv_cache_config = KvCacheConfig(
+        host_cache_size=8 * 1024 * 1024 * 1024,  # 8 GB host memory
+        secondary_offload_min_priority=35,  # Offload blocks with priority >= 35
+    )
+    ```
+  </Accordion>
+
+  <Accordion title="Multi-Pool Support" icon="layer-group">
+    Separate pools for different attention configurations:
+    
+    - Each unique combination of (attention_window_size, num_kv_heads) gets its own pool
+    - Supports models with variable attention window sizes
+    - Enables Multi-Query Attention (MQA) and Grouped-Query Attention (GQA)
+  </Accordion>
+</AccordionGroup>
+
+### Configuration
+
+```python
+from tensorrt_llm import LLM
+from tensorrt_llm.llmapi import KvCacheConfig
+
+kv_cache_config = KvCacheConfig(
+    # Memory allocation
+    free_gpu_memory_fraction=0.9,  # Use 90% of free GPU memory
+    max_tokens=None,  # Or set explicit token limit
+    
+    # Block reuse
+    enable_block_reuse=True,  # Enable cross-request reuse
+    enable_partial_reuse=True,  # Allow partial block matches
+    
+    # Data type
+    dtype='auto',  # Or 'float16', 'bfloat16', 'int8', 'fp8'
+    
+    # Host offloading
+    host_cache_size=0,  # Set > 0 to enable offloading (in bytes)
+    secondary_offload_min_priority=35,
+    
+    # Attention window (per layer)
+    max_attention_window=[4096],  # Full attention for all layers
+)
+
+llm = LLM(
+    model="meta-llama/Llama-3.2-1B",
+    kv_cache_config=kv_cache_config,
+)
+```
+
+<Info>
+**Source Code**: `tensorrt_llm/_torch/pyexecutor/resource_manager.py` contains the `KVCacheManager` implementation.
+
+**Detailed Documentation**: See [KV Cache System](https://github.com/NVIDIA/TensorRT-LLM/blob/main/docs/source/features/kvcache.md)
+</Info>
+
+---
+
+## Custom Attention Kernels
+
+TensorRT-LLM uses highly optimized custom attention kernels that significantly outperform naive implementations.
+
+### Attention Backends
+
+<Tabs>
+  <Tab title="TrtllmAttention (Default)">
+    **Hand-optimized CUDA kernels** - Maximum performance
+
+    Features:
+    - **Context Phase**: FlashAttention-2 for long sequences, vanilla attention for short
+    - **Generation Phase**: Masked Multi-Head Attention with multi-block optimization
+    - **XQA Optimization**: Specialized kernels for MQA/GQA in generation
+    - **Fused Operations**: RoPE, QKV bias, quantization/dequantization fused into attention
+    - **FP8 Support**: FP8 attention for both context and generation
+    - **Paged KV Cache**: Native support for block-based cache
+
+    ```python
+    llm = LLM(
+        model="meta-llama/Llama-3.2-1B",
+        attn_backend="trtllm",  # Default
+    )
+    ```
+  </Tab>
+
+  <Tab title="FlashInferAttention">
+    **FlashInfer library** - Alternative high-performance backend
+
+    Features:
+    - Excellent performance on various workloads
+    - FP8 quantization for KV cache
+    - RoPE fusion
+    - Paged KV cache support
+    - In-flight batching
+
+    ```python
+    llm = LLM(
+        model="meta-llama/Llama-3.2-1B",
+        attn_backend="flashinfer",
+    )
+    ```
+  </Tab>
+
+  <Tab title="VanillaAttention">
+    **Reference implementation** - For testing and debugging
+
+    ⚠️ Not optimized - do not use in production
+
+    ```python
+    llm = LLM(
+        model="meta-llama/Llama-3.2-1B",
+        attn_backend="vanilla",
+    )
+    ```
+  </Tab>
+</Tabs>
+
+### FlashAttention-2
+
+For context phase with long sequences, TensorRT-LLM uses the [FlashAttention-2](https://arxiv.org/abs/2307.08691) algorithm:
+
+- **Memory-efficient**: O(N) memory instead of O(N²)
+- **IO-aware**: Optimized for GPU memory hierarchy
+- **Fast**: 2-4x speedup over standard attention
+- **Exact**: Same result as standard attention (not approximate)
+
+```
+Standard Attention:          FlashAttention-2:
+┌─────────────────┐          ┌─────────────────┐
+│ Q, K, V         │          │ Q, K, V         │
+└────────┬────────┘          └────────┬────────┘
+         │                            │
+         ▼                            ▼
+┌─────────────────┐          ┌─────────────────┐
+│ Compute Q @ K^T │          │ Fused kernel    │
+│ (N x N matrix)  │          │ (tiled, no N²   │
+└────────┬────────┘          │  materialization│
+         │                   └────────┬────────┘
+         ▼                            │
+┌─────────────────┐                   ▼
+│ Apply Softmax   │          ┌─────────────────┐
+└────────┬────────┘          │ Output          │
+         │                   └─────────────────┘
+         ▼
+┌─────────────────┐
+│ Multiply by V   │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ Output          │
+└─────────────────┘
+
+Memory: O(N²)                Memory: O(N)
+```
+
+### XQA Optimization
+
+For **Multi-Query Attention (MQA)** and **Grouped-Query Attention (GQA)** in the generation phase, TensorRT-LLM uses XQA (eXtended Query Attention) kernels:
+
+- Optimized for cases where `num_kv_heads < num_query_heads`
+- Supports FP16, BF16, FP8, INT8 KV cache
+- Works with paged KV cache
+- Automatic heuristic decides between XQA and standard masked MHA
+
+**Support matrix**:
+- Compute dtype: FP16, BF16
+- KV cache dtype: FP16, BF16, FP8, INT8
+- Block sizes: 8, 16, 32, 64, 128 tokens per block
+
+<Tip>
+Set `TRTLLM_FORCE_XQA=1` to always use XQA kernels when supported (useful for debugging).
+</Tip>
+
+---
+
+## CUDA Graphs
+
+CUDA Graphs capture sequences of GPU operations and replay them with a single API call, dramatically reducing CPU overhead.
+
+### The Problem: CPU Overhead
+
+```python
+# Without CUDA Graphs - Every iteration:
+for step in range(num_steps):
+    # Each kernel launch has CPU overhead:
+    kernel_1.launch(...)  # ~5-10 μs CPU time
+    kernel_2.launch(...)  # ~5-10 μs CPU time
+    kernel_3.launch(...)  # ~5-10 μs CPU time
+    ...
+    # For 100 kernels: ~500-1000 μs wasted per step!
+```
+
+For generation phase (1 token per step), this CPU overhead can be significant, especially on high-end GPUs.
+
+### The Solution: CUDA Graphs
+
+```python
+# With CUDA Graphs:
+# 1. Capture phase (once):
+with torch.cuda.graph_capture():
+    captured_graph = capture_operations()
+
+# 2. Replay phase (every iteration):
+for step in range(num_steps):
+    captured_graph.replay()  # ~1 μs CPU time!
+    # All kernels execute with minimal CPU overhead
+```
+
+### CUDA Graph Padding
+
+Since CUDA Graphs require fixed shapes, TensorRT-LLM uses **padding** to maximize graph hit rate:
+
+- Capture graphs for multiple batch sizes: [1, 2, 4, 8, 16, 32, ...]
+- If batch size doesn't match exactly, pad to nearest larger captured size
+- Compute "wasted" padded tokens, but still faster than eager mode
+
+```
+Captured graphs for batch sizes: [1, 2, 4, 8]
+
+Batch size 3 arrives:
+  → Pad to size 4 (1 wasted token)
+  → Use CUDA Graph for size 4
+  → Still faster than eager mode!
+```
+
+<Note>
+**Performance Impact**: CUDA Graphs with padding can improve throughput by up to **22%** on certain models and hardware configurations.
+</Note>
+
+### Automatic Management
+
+CUDA Graphs are managed automatically by TensorRT-LLM:
+
+- Enabled by default for generation phase
+- Cannot be used for context phase (variable sequence lengths)
+- Warmup phase captures common batch sizes
+- Runtime automatically selects best captured graph
+
+<Info>
+CUDA Graphs are applied to the model forward pass in the `PyExecutor`. See `tensorrt_llm/_torch/pyexecutor/cuda_graph_runner.py` for implementation details.
+</Info>
+
+---
+
+## Overlap Scheduler
+
+The **Overlap Scheduler** hides CPU-bound work behind GPU computation, maximizing throughput.
+
+### How It Works
+
+<Tabs>
+  <Tab title="Without Overlap (Sequential)">
+    ```
+    Step N:
+      1. Run GPU forward pass            [GPU busy] [CPU idle]
+      2. Wait for GPU to finish          [GPU idle] [CPU idle]
+      3. CPU processes results           [GPU idle] [CPU busy]
+      4. CPU checks stop criteria        [GPU idle] [CPU busy]
+      5. CPU updates response queues     [GPU idle] [CPU busy]
+      ────────────────────────────────────────────────────────
+    Step N+1:
+      1. Run GPU forward pass            [GPU busy] [CPU idle]
+      ...
+    
+    ❌ GPU idle while CPU works
+    ```
+  </Tab>
+
+  <Tab title="With Overlap (Concurrent)">
+    ```
+    Step N:
+      1. Launch GPU work for step N+1    [GPU busy] [CPU available]
+         (don't wait for completion)
+      2. While GPU runs, CPU processes   [GPU busy] [CPU busy]
+         results from step N-1:
+         - Check stop criteria
+         - Update response queues
+         - Schedule next batch
+    
+    ✅ GPU and CPU work concurrently
+    ✅ Minimal GPU idle time
+    ```
+  </Tab>
+</Tabs>
+
+### Implementation
+
+```python
+# Simplified PyExecutor loop with overlap:
+def run_iteration(self):
+    # Launch GPU work for current step (n+1)
+    scheduled_batch, _, _ = self._schedule()
+    batch_outputs = self._forward_step(scheduled_batch, previous_tensors_device)
+    sample_state = self._sample_async(scheduled_batch, batch_outputs)
+    
+    # While GPU is busy, process CPU-bound work from previous step (n)
+    if self.previous_batch is not None:
+        self._process_previous_batch()  # Check stop criteria, update responses
+    
+    self.previous_batch = scheduled_batch
+```
+
+**Trade-off**: Adds one extra decoding step of latency (requests are returned 1 step later), but significantly improves throughput.
+
+<Check>
+**Enabled by default**. To disable: `LLM(disable_overlap_scheduler=True)`
+</Check>
+
+<Info>
+Inspired by [NanoFlow](https://arxiv.org/abs/2408.12757) and [SGLang](https://lmsys.org/blog/2024-12-04-sglang-v0-4/#zero-overhead-batch-scheduler).
+
+**Source**: `tensorrt_llm/_torch/pyexecutor/py_executor.py`
+</Info>
+
+---
+
+## Additional Optimizations
+
+### Packed Tensors (Remove Input Padding)
+
+All TensorRT-LLM operations use **packed tensors** with no padding:
+
+```python
+# Traditional (padded):
+tensor = [
+    [tok1, tok2, tok3, PAD, PAD],  # Sequence 1: 3 tokens
+    [tok1, tok2, tok3, tok4, PAD],  # Sequence 2: 4 tokens
+]
+# Wastes computation on PAD tokens
+
+# Packed (no padding):
+tensor = [tok1, tok2, tok3, tok1, tok2, tok3, tok4]
+seq_lens = [3, 4]  # Metadata
+# No wasted computation!
+```
+
+**Benefits**:
+- Reduced memory usage
+- No wasted FLOPS on padding tokens
+- Required for in-flight batching
+
+### Quantization
+
+Reduce memory and increase throughput with quantization:
+
+- **FP8**: ~2x memory reduction, minimal accuracy loss
+- **INT8**: ~4x memory reduction, careful calibration required
+- **INT4**: ~8x memory reduction, for extreme memory constraints
+
+```python
+llm = LLM(
+    model="meta-llama/Llama-3.2-1B",
+    kv_cache_config=KvCacheConfig(
+        dtype='fp8'  # FP8 KV cache quantization
+    )
+)
+```
+
+### Speculative Decoding
+
+Accelerate generation with draft models:
+
+- Small draft model proposes multiple tokens
+- Large target model verifies in parallel
+- Accepted tokens have same quality as target model
+- **Speedup**: 1.5-3x depending on acceptance rate
+
+**Supported strategies**:
+- EAGLE, Medusa, n-gram, model-based drafting
+
+### Multi-GPU Optimizations
+
+- **Tensor Parallelism**: Split layers across GPUs
+- **Pipeline Parallelism**: Distribute layers across GPUs
+- **Disaggregated Serving**: Separate prefill and decode on different GPU pools
+  - Prefill: High computation, low memory
+  - Decode: Low computation, high memory
+  - Optimize each pool independently
+
+---
+
+## Performance Tuning Checklist
+
+<Steps>
+  <Step title="Enable Core Optimizations">
+    Ensure these are enabled (most are default):
+    - ✅ In-flight batching (automatic)
+    - ✅ Paged KV cache (`enable_block_reuse=True`)
+    - ✅ Overlap scheduler (default, or set `disable_overlap_scheduler=False`)
+    - ✅ CUDA Graphs (automatic for generation phase)
+    - ✅ Chunked context (automatic with paged KV cache)
+  </Step>
+
+  <Step title="Tune Scheduling Parameters">
+    - Set `max_batch_size` high (e.g., 256+) to avoid becoming bottleneck
+    - Tune `max_num_tokens` (start with 8192, increase for throughput, decrease for latency)
+    - Consider workload characteristics (prompt length distribution)
+  </Step>
+
+  <Step title="Optimize KV Cache">
+    - Set `free_gpu_memory_fraction=0.9` to use most of GPU memory
+    - Enable `host_cache_size` if you have spare CPU memory
+    - Configure retention policies for workloads with common prefixes
+  </Step>
+
+  <Step title="Choose Best Attention Backend">
+    - Default `trtllm` is recommended
+    - Try `flashinfer` if you need FP8 KV cache
+    - Benchmark both for your specific workload
+  </Step>
+
+  <Step title="Consider Advanced Techniques">
+    - FP8 quantization for KV cache (2x memory reduction)
+    - Speculative decoding (1.5-3x speedup)
+    - Disaggregated serving for mixed workloads
+  </Step>
+</Steps>
+
+<CardGroup cols={2}>
+  <Card title="System Architecture" icon="sitemap" href="/concepts/architecture">
+    Understand how components work together
+  </Card>
+
+  <Card title="Backend Selection" icon="server" href="/concepts/backends">
+    Choose the right backend for your use case
+  </Card>
+</CardGroup>

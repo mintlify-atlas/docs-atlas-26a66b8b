@@ -1,0 +1,484 @@
+---
+title: "Optimization Guide"
+description: "Performance tuning best practices for TensorRT-LLM"
+icon: "gauge-high"
+---
+
+This guide covers performance tuning strategies to maximize throughput and minimize latency when deploying TensorRT-LLM models.
+
+## Overview
+
+Optimizing LLM inference involves balancing multiple factors:
+
+- **Batch size** - Number of concurrent requests processed together
+- **KV cache sizing** - Memory allocation for attention caching
+- **Quantization** - Precision reduction to improve throughput
+- **Parallelism strategy** - Distributing computation across GPUs
+- **Hardware utilization** - Maximizing GPU compute and memory bandwidth
+
+## Reference Configurations
+
+TensorRT-LLM provides 170+ pareto-optimized serving configurations in the `examples/configs/database/` directory. These configs are pre-tuned for:
+
+- Multiple models (Llama, DeepSeek, Mixtral, GPT, etc.)
+- Different GPU types (H100, A100, B200, etc.)
+- Various ISL/OSL combinations (input/output sequence lengths)
+- Different concurrency levels (1 to 2048+ concurrent requests)
+
+<Tip>
+  Always start with reference configs as your baseline. These configurations have been profiled and optimized for specific workload patterns.
+</Tip>
+
+### Using Reference Configs
+
+The `lookup.yaml` file maps configurations to specific scenarios:
+
+```yaml
+- model: deepseek-ai/DeepSeek-R1-0528
+  arch: DeepseekV3ForCausalLM
+  gpu: B200_NVL
+  isl: 1024
+  osl: 1024
+  concurrency: 16
+  config_path: examples/configs/database/deepseek-ai/DeepSeek-R1-0528/B200/1k1k_tp8_conc16.yaml
+  num_gpus: 8
+```
+
+### Example Reference Config
+
+Here's a production-optimized config for DeepSeek-R1 on B200 GPUs:
+
+```yaml
+max_batch_size: 512
+cuda_graph_config:
+  enable_padding: true
+  max_batch_size: 16
+print_iter_log: true
+kv_cache_config:
+  dtype: fp8
+  free_gpu_memory_fraction: 0.8
+stream_interval: 10
+moe_config:
+  backend: TRTLLM
+speculative_config:
+  decoding_type: MTP
+  num_nextn_predict_layers: 3
+tensor_parallel_size: 8
+moe_expert_parallel_size: 8
+trust_remote_code: true
+max_num_tokens: 3136
+max_seq_len: 2068
+```
+
+Key parameters:
+- `max_batch_size: 512` - Maximum concurrent requests
+- `kv_cache_config.dtype: fp8` - FP8 KV cache for 2x memory savings
+- `kv_cache_config.free_gpu_memory_fraction: 0.8` - Use 80% of GPU memory
+- `tensor_parallel_size: 8` - Distribute model across 8 GPUs
+- `speculative_config` - Enable multi-token prediction for faster decoding
+
+## Batch Size Optimization
+
+Batch size is the most critical parameter for throughput optimization.
+
+### How Batch Size Affects Performance
+
+<CardGroup cols={2}>
+  <Card title="Small Batches" icon="turtle">
+    **Pros:**
+    - Lower latency per request
+    - Better for interactive workloads
+    
+    **Cons:**
+    - Poor GPU utilization
+    - Lower overall throughput
+  </Card>
+  
+  <Card title="Large Batches" icon="rabbit">
+    **Pros:**
+    - Higher GPU utilization
+    - Maximum throughput
+    
+    **Cons:**
+    - Higher latency per request
+    - Requires more memory
+  </Card>
+</CardGroup>
+
+### Finding Optimal Batch Size
+
+<Steps>
+  <Step title="Start with Reference Config">
+    Use the reference config for your model, GPU, and workload pattern as a baseline.
+  </Step>
+
+  <Step title="Measure Current Performance">
+    Benchmark with your actual workload:
+    
+    ```bash
+    trtllm-bench --model meta-llama/Llama-3.1-8B \
+      throughput \
+      --dataset your_dataset.jsonl \
+      --backend pytorch \
+      --config baseline.yaml
+    ```
+  </Step>
+
+  <Step title="Experiment with Batch Sizes">
+    Test increasing batch sizes until throughput plateaus or memory is exhausted:
+    
+    ```yaml
+    # Test configurations
+    max_batch_size: 64   # baseline
+    max_batch_size: 128  # 2x increase
+    max_batch_size: 256  # 4x increase
+    max_batch_size: 512  # 8x increase
+    ```
+  </Step>
+
+  <Step title="Monitor Memory Usage">
+    Check GPU memory during benchmarks:
+    
+    ```bash
+    nvidia-smi dmon -s mu
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+  Setting `max_batch_size` too high can cause OOM errors. Always monitor GPU memory usage and leave headroom for KV cache growth.
+</Warning>
+
+## KV Cache Optimization
+
+The KV (Key-Value) cache stores attention states for generated tokens. Proper sizing is critical for performance.
+
+### KV Cache Memory Usage
+
+KV cache memory scales with:
+- **Batch size** - More concurrent requests = more cache
+- **Sequence length** - Longer sequences = larger cache per request
+- **Model size** - More layers/heads = more cache per token
+- **Data type** - FP16 (2 bytes) vs FP8 (1 byte) vs FP4 (0.5 bytes)
+
+### Configuration Options
+
+```yaml
+kv_cache_config:
+  # Data type for KV cache
+  dtype: fp8  # Options: auto, fp16, fp8
+  
+  # GPU memory fraction reserved for KV cache
+  free_gpu_memory_fraction: 0.8  # Use 80% of available memory
+  
+  # Enable KV cache reuse across requests
+  enable_block_reuse: true
+```
+
+### KV Cache Quantization
+
+Reducing KV cache precision can dramatically increase capacity:
+
+| Data Type | Memory per Token | Capacity Gain | Accuracy Impact |
+|-----------|------------------|---------------|------------------|
+| FP16 | 2 bytes | 1x (baseline) | None |
+| FP8 | 1 byte | 2x | Minimal (less than 1% degradation) |
+| FP4 | 0.5 bytes | 4x | Small (~2-3% degradation) |
+
+<Tip>
+  **Recommendation:** Start with FP8 KV cache - it provides 2x memory savings with negligible accuracy loss.
+</Tip>
+
+### Automatic KV Cache Sizing
+
+```yaml
+kv_cache_config:
+  free_gpu_memory_fraction: 0.9  # Auto-size to use 90% of free memory
+```
+
+TensorRT-LLM automatically calculates optimal KV cache blocks based on:
+- Available GPU memory
+- Model memory footprint
+- Configured batch size and sequence length
+
+## Quantization Selection
+
+Quantization reduces model size and increases throughput by using lower precision.
+
+### Supported Quantization Methods
+
+<AccordionGroup>
+  <Accordion title="FP8 - Best Balance" icon="star">
+    **8-bit floating point quantization**
+    
+    - **Throughput:** 1.5-2x vs FP16
+    - **Memory:** 2x reduction
+    - **Accuracy:** Less than 1% degradation
+    - **Hardware:** Requires Hopper GPUs (H100, H200) or newer
+    
+    ```bash
+    # Use pre-quantized checkpoint
+    trtllm-bench --model nvidia/Llama-3.1-8B-Instruct-FP8 \
+      throughput --dataset dataset.jsonl --backend pytorch
+    ```
+    
+    **Best for:** Production deployments on modern GPUs
+  </Accordion>
+
+  <Accordion title="INT4/FP4 - Maximum Throughput" icon="bolt">
+    **4-bit quantization**
+    
+    - **Throughput:** 2-3x vs FP16
+    - **Memory:** 4x reduction
+    - **Accuracy:** 2-5% degradation (model-dependent)
+    - **Hardware:** Broad GPU support
+    
+    **Best for:** Maximum throughput when accuracy trade-offs are acceptable
+  </Accordion>
+
+  <Accordion title="INT8 - Broad Compatibility" icon="server">
+    **8-bit integer quantization**
+    
+    - **Throughput:** 1.3-1.8x vs FP16
+    - **Memory:** 2x reduction
+    - **Accuracy:** ~1-2% degradation
+    - **Hardware:** All modern NVIDIA GPUs
+    
+    **Best for:** Deployments on older GPU architectures (Ampere/Turing)
+  </Accordion>
+</AccordionGroup>
+
+### Quantization Recommendations by Model Size
+
+| Model Size | Recommended Quantization | Rationale |
+|------------|--------------------------|------------|
+| < 10B params | FP8 or FP16 | Fits in memory, maximize accuracy |
+| 10-70B params | FP8 | Best throughput/accuracy balance |
+| 70B+ params | FP8 + FP8 KV cache | Critical for memory efficiency |
+| 400B+ params | FP4/INT4 | Only way to fit on consumer hardware |
+
+## Parallelism Strategies
+
+Distribute model computation across multiple GPUs.
+
+### Tensor Parallelism (TP)
+
+Splits individual layers across GPUs:
+
+```yaml
+tensor_parallel_size: 8  # Split model across 8 GPUs
+```
+
+**Characteristics:**
+- High communication overhead (all-reduce on each layer)
+- Best for models that don't fit on single GPU
+- Scales well up to 8 GPUs, diminishing returns beyond that
+
+**Use when:** Model memory exceeds single GPU capacity
+
+### Pipeline Parallelism (PP)
+
+Splits model layers across GPUs:
+
+```yaml
+pipeline_parallel_size: 4  # Distribute layers across 4 GPUs
+```
+
+**Characteristics:**
+- Lower communication overhead
+- Requires larger batch sizes for efficiency (fill pipeline)
+- Can have GPU idle time (bubble overhead)
+
+**Use when:** You have many layers and large batch sizes
+
+### Expert Parallelism (EP)
+
+For Mixture-of-Experts models, distribute experts across GPUs:
+
+```yaml
+moe_expert_parallel_size: 8  # Distribute experts across 8 GPUs
+tensor_parallel_size: 1      # Can combine with TP
+```
+
+**Use when:** Deploying MoE models (Mixtral, DeepSeek-V3, etc.)
+
+### Combining Strategies
+
+```yaml
+# Example: 32 GPU deployment of 405B model
+tensor_parallel_size: 8
+pipeline_parallel_size: 4
+# Total: 8 * 4 = 32 GPUs
+```
+
+<Note>
+  Always ensure `tensor_parallel_size * pipeline_parallel_size = total_gpus`
+</Note>
+
+## Hardware Utilization
+
+### CUDA Graphs
+
+CUDA graphs reduce kernel launch overhead by recording execution patterns:
+
+```yaml
+cuda_graph_config:
+  enable_padding: true       # Pad batches to fixed sizes
+  max_batch_size: 16         # Maximum batch size for graphs
+```
+
+**Benefits:**
+- 10-20% latency reduction for small batches
+- Most effective for batch sizes < 32
+
+**Trade-offs:**
+- Requires padding (slight memory overhead)
+- Only works with fixed-size batches
+
+### Memory Management
+
+```yaml
+# Maximize GPU memory utilization
+kv_cache_config:
+  free_gpu_memory_fraction: 0.9  # Use 90% of memory
+  
+# Enable memory-efficient features
+enable_chunked_context: true      # Process long contexts in chunks
+max_num_tokens: 8192              # Maximum tokens per iteration
+```
+
+### Attention Kernels
+
+TensorRT-LLM automatically selects optimal attention implementations:
+
+- **Flash Attention** - Memory-efficient for long sequences
+- **Paged Attention** - Efficient KV cache management
+- **XQA** - Optimized for Hopper GPUs
+
+<Tip>
+  These are auto-selected based on your hardware and model config. No manual tuning needed.
+</Tip>
+
+## Speculative Decoding
+
+Accelerate generation by predicting multiple tokens per iteration:
+
+```yaml
+speculative_config:
+  decoding_type: MTP                    # Multi-Token Prediction
+  num_nextn_predict_layers: 3           # Number of prediction layers
+```
+
+**Benefits:**
+- 1.5-2x speedup for compatible models
+- No accuracy loss (predictions are verified)
+
+**Requirements:**
+- Model must have MTP/medusa heads
+- Works best for predictable text generation
+
+## Performance Tuning Workflow
+
+<Steps>
+  <Step title="Establish Baseline">
+    Start with reference config for your model/GPU/workload:
+    
+    ```bash
+    trtllm-bench --model meta-llama/Llama-3.1-70B \
+      throughput \
+      --dataset dataset.jsonl \
+      --config examples/configs/database/.../baseline.yaml
+    ```
+    
+    Record throughput and latency metrics.
+  </Step>
+
+  <Step title="Enable FP8 Quantization">
+    Use pre-quantized checkpoint:
+    
+    ```bash
+    trtllm-bench --model nvidia/Llama-3.1-70B-Instruct-FP8 \
+      throughput --dataset dataset.jsonl
+    ```
+    
+    Expect 1.5-2x throughput improvement.
+  </Step>
+
+  <Step title="Optimize KV Cache">
+    Enable FP8 KV cache:
+    
+    ```yaml
+    kv_cache_config:
+      dtype: fp8
+      free_gpu_memory_fraction: 0.85
+    ```
+    
+    Monitor for memory savings and capacity increase.
+  </Step>
+
+  <Step title="Tune Batch Size">
+    Increase batch size until throughput plateaus:
+    
+    ```yaml
+    max_batch_size: 128  # Start here
+    max_batch_size: 256  # Double it
+    max_batch_size: 512  # Keep going
+    ```
+    
+    Stop when memory is exhausted or throughput stops improving.
+  </Step>
+
+  <Step title="Profile and Analyze">
+    Use profiling tools to identify bottlenecks:
+    
+    ```bash
+    TLLM_PROFILE_START_STOP=10-50 nsys profile \
+      -o trace -t cuda,nvtx -c cudaProfilerApi \
+      trtllm-bench ...
+    ```
+    
+    See [Profiling Guide](/performance/profiling) for details.
+  </Step>
+</Steps>
+
+## Common Pitfalls
+
+<Warning>
+  **OOM Errors:** Reduce `max_batch_size` or `free_gpu_memory_fraction` if you hit out-of-memory errors.
+</Warning>
+
+<Warning>
+  **Low Throughput:** If throughput is low despite high batch size, check GPU utilization with `nvidia-smi`. Low utilization may indicate CPU bottlenecks or inefficient batching.
+</Warning>
+
+<Warning>
+  **High Latency:** If individual request latency is too high, reduce batch size or enable streaming to get time-to-first-token improvements.
+</Warning>
+
+## Performance Checklist
+
+- [ ] Used reference config as baseline
+- [ ] Enabled FP8 quantization (if using Hopper GPUs)
+- [ ] Configured FP8 KV cache
+- [ ] Tuned batch size for workload
+- [ ] Set appropriate memory fraction (0.8-0.9)
+- [ ] Enabled CUDA graphs for low-latency scenarios
+- [ ] Validated accuracy on representative samples
+- [ ] Profiled to identify bottlenecks
+
+## Related Resources
+
+<CardGroup cols={2}>
+  <Card title="Benchmarking" icon="chart-line" href="/performance/benchmarking">
+    Measure performance with trtllm-bench
+  </Card>
+  <Card title="Profiling" icon="magnifying-glass-chart" href="/performance/profiling">
+    Analyze performance with profiling tools
+  </Card>
+  <Card title="Reference Configs" icon="file-code" href="/config/reference-configs">
+    Browse 170+ optimized configurations
+  </Card>
+  <Card title="Quantization" icon="compress" href="/features/quantization">
+    Deep dive into quantization methods
+  </Card>
+</CardGroup>

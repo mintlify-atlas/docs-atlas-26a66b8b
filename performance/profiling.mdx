@@ -1,0 +1,432 @@
+---
+title: "Profiling"
+description: "Profile and analyze TensorRT-LLM performance with NVIDIA Nsight Systems"
+icon: "magnifying-glass-chart"
+---
+
+TensorRT-LLM integrates with NVIDIA profiling tools to help you understand performance characteristics and identify bottlenecks.
+
+## Overview
+
+NVIDIA Nsight Systems provides application-level profiling with metric sampling capabilities that bridge the gap between timing analysis and kernel-level deep dives.
+
+Key capabilities:
+- Toggle CUDA profiler on/off to focus on specific regions
+- PyTorch profiler integration (PyTorch workflow only)
+- NVTX markers for understanding execution phases
+- Metric collection for GPU utilization analysis
+
+<Tip>
+  Given the long runtimes of LLMs and diverse workloads during inference, TensorRT-LLM's profiling features help you zero in on the most important regions.
+</Tip>
+
+## Profiling Features
+
+### CUDA Profiler Control
+
+Toggling the CUDA profiler runtime API on and off provides:
+- Precise control over profiled regions
+- Smaller profile files for faster post-processing
+- Focused analysis on iterations of interest
+
+### PyTorch Profiler (PyTorch Workflow Only)
+
+For PyTorch backend users:
+- Detailed performance breakdown of model execution
+- Chrome tracing visualization
+- CPU/GPU timeline analysis
+
+### NVTX Markers
+
+- Basic NVTX markers enabled by default (PyTorch workflow)
+- Enhanced markers available for debugging
+- Garbage collection tracking
+- Python GIL (Global Interpreter Lock) visibility
+
+## Environment Variables
+
+<ParamField path="TLLM_PROFILE_START_STOP" type="string">
+  Specify iteration range to profile: `A-B` where A is start iteration and B is end iteration.
+  
+  **Example:** `TLLM_PROFILE_START_STOP=100-150`
+  
+  **Usage:** Combine with `nsys profile -c cudaProfilerApi` to only collect specific iterations.
+</ParamField>
+
+<ParamField path="TLLM_NVTX_DEBUG" type="integer">
+  Enable verbose NVTX markers for debugging.
+  
+  **Example:** `TLLM_NVTX_DEBUG=1`
+  
+  **Effect:** Adds detailed NVTX markers throughout execution for granular analysis.
+</ParamField>
+
+<ParamField path="TLLM_PROFILE_RECORD_GC" type="integer">
+  Enable garbage collection NVTX markers.
+  
+  **Example:** `TLLM_PROFILE_RECORD_GC=1`
+  
+  **Use case:** Identify if Python GC is causing performance hiccups.
+</ParamField>
+
+<ParamField path="TLLM_TORCH_PROFILE_TRACE" type="string">
+  Path to save PyTorch profiler trace (PyTorch workflow only).
+  
+  **Example:** `TLLM_TORCH_PROFILE_TRACE=trace.json`
+  
+  **Visualization:** Open the JSON file in [chrome://tracing/](chrome://tracing/)
+</ParamField>
+
+<ParamField path="TLLM_LLMAPI_ENABLE_NVTX" type="integer">
+  Enable NVTX markers in the LLM API layer.
+  
+  **Example:** `TLLM_LLMAPI_ENABLE_NVTX=1`
+</ParamField>
+
+## Basic Profiling Workflow
+
+<Steps>
+  <Step title="Prepare Your Dataset">
+    Create or use an existing benchmark dataset:
+    
+    ```bash
+    trtllm-bench --model meta-llama/Llama-3.1-8B \
+      prepare-dataset \
+      --output dataset.txt \
+      token-norm-dist \
+      --num-requests=1000 \
+      --input-mean=1000 \
+      --output-mean=1000 \
+      --input-stdev=0 \
+      --output-stdev=0
+    ```
+  </Step>
+
+  <Step title="Run with Profiling">
+    Profile specific iterations (e.g., iterations 100-150):
+    
+    ```bash
+    TLLM_PROFILE_START_STOP=100-150 nsys profile \
+      -o trace -f true \
+      -t cuda,nvtx \
+      -c cudaProfilerApi \
+      --cuda-graph-trace node \
+      trtllm-bench \
+        --model meta-llama/Llama-3.1-8B \
+        throughput \
+        --dataset dataset.txt \
+        --backend pytorch
+    ```
+    
+    This creates `trace.nsys-rep`.
+  </Step>
+
+  <Step title="Analyze Results">
+    Open the report in NVIDIA Nsight Systems:
+    
+    ```bash
+    nsys-ui trace.nsys-rep
+    ```
+    
+    Or use the GUI application on your workstation.
+  </Step>
+</Steps>
+
+## Advanced Profiling Example
+
+Comprehensive profiling with all debugging features enabled:
+
+```bash
+#!/bin/bash
+
+# Set model path
+MODEL_PATH="meta-llama/Llama-3.1-8B"
+NUM_SAMPLES=1000
+
+# Prepare dataset
+trtllm-bench --model ${MODEL_PATH} \
+    prepare-dataset \
+    --output dataset.txt \
+    token-norm-dist \
+    --num-requests=${NUM_SAMPLES} \
+    --input-mean=1000 --output-mean=1000 \
+    --input-stdev=0 --output-stdev=0
+
+# Profile with comprehensive instrumentation
+TLLM_PROFILE_START_STOP=100-150 nsys profile \
+  -o trace -f true \
+  -t 'cuda,nvtx,python-gil' \
+  -c cudaProfilerApi \
+  --cuda-graph-trace node \
+  -e TLLM_PROFILE_RECORD_GC=1,TLLM_LLMAPI_ENABLE_NVTX=1,TLLM_TORCH_PROFILE_TRACE=trace.json \
+  --trace-fork-before-exec=true \
+  trtllm-bench \
+    --model ${MODEL_PATH} \
+    throughput \
+    --dataset dataset.txt \
+    --warmup 0 \
+    --backend pytorch \
+    --streaming
+```
+
+**Key options explained:**
+
+- `-t 'cuda,nvtx,python-gil'` - Collect CUDA kernels, NVTX markers, and Python GIL events
+- `-c cudaProfilerApi` - Only profile iterations specified by `TLLM_PROFILE_START_STOP`
+- `--cuda-graph-trace node` - Capture CUDA graph structure
+- `-e TLLM_PROFILE_RECORD_GC=1` - Record garbage collection events
+- `-e TLLM_LLMAPI_ENABLE_NVTX=1` - Enable LLM API markers
+- `-e TLLM_TORCH_PROFILE_TRACE=trace.json` - Save PyTorch trace
+- `--trace-fork-before-exec=true` - Properly handle process forking
+
+<Note>
+  This creates two outputs:
+  - `trace.nsys-rep` - Nsight Systems report (open with `nsys-ui`)
+  - `trace.json` - PyTorch profiler trace (open in [chrome://tracing/](chrome://tracing/))
+</Note>
+
+## Profiling trtllm-serve
+
+The same profiling approach works for the OpenAI-compatible server:
+
+```bash
+TLLM_PROFILE_START_STOP=100-150 nsys profile \
+  -o trace -f true \
+  -t 'cuda,nvtx' \
+  -c cudaProfilerApi \
+  trtllm-serve \
+    meta-llama/Llama-3.1-8B \
+    --backend pytorch
+```
+
+Then send requests to the server to trigger the profiled iterations.
+
+## PyTorch Profiler Workflow
+
+For detailed PyTorch-level analysis:
+
+<Steps>
+  <Step title="Enable PyTorch Tracing">
+    Set the trace output path:
+    
+    ```bash
+    export TLLM_TORCH_PROFILE_TRACE=/path/to/trace.json
+    export TLLM_PROFILE_START_STOP=50-100
+    ```
+  </Step>
+
+  <Step title="Run Benchmark">
+    ```bash
+    trtllm-bench --model meta-llama/Llama-3.1-8B \
+      throughput \
+      --dataset dataset.jsonl \
+      --backend pytorch
+    ```
+    
+    The trace is saved to `/path/to/trace.json`.
+  </Step>
+
+  <Step title="Visualize in Chrome">
+    1. Open Chrome browser
+    2. Navigate to [chrome://tracing/](chrome://tracing/)
+    3. Click "Load" and select `trace.json`
+    4. Analyze the timeline:
+       - CPU operations (Python, data loading)
+       - GPU kernels
+       - Memory allocations
+       - Operator-level breakdown
+  </Step>
+</Steps>
+
+## MoE-Specific Profiling
+
+For Mixture-of-Experts models, you can analyze expert load balancing:
+
+### Perfect Router Analysis
+
+Isolate routing inefficiencies by comparing with idealized load balancing:
+
+```bash
+# Baseline: Normal routing
+trtllm-bench --model deepseek-ai/DeepSeek-V3 \
+  throughput --dataset dataset.jsonl
+
+# Compare with perfect routing (idealized)
+ENABLE_PERFECT_ROUTER=1 trtllm-bench \
+  --model deepseek-ai/DeepSeek-V3 \
+  throughput --dataset dataset.jsonl
+```
+
+**What it does:**
+- Bypasses learned router
+- Uses pre-computed, perfectly balanced routing logits
+- Shows theoretical maximum throughput with ideal load distribution
+
+<Warning>
+  `ENABLE_PERFECT_ROUTER` produces **incorrect outputs** - it's for performance analysis only, never use in production.
+</Warning>
+
+### Interpreting MoE Results
+
+| Scenario | Interpretation | Action |
+|----------|----------------|--------|
+| Similar performance with/without perfect router | Routing is not a bottleneck | Focus optimization elsewhere |
+| >10% improvement with perfect router | Router causing load imbalance | Optimize routing or try alternative strategies |
+
+<Note>
+  Perfect router currently supports:
+  - GPT-OSS (uses `RenormalizeMoeRoutingMethod`)
+  - DeepSeek-V3 / DeepSeek-R1 (uses `DeepSeekV3MoeRoutingMethod`)
+</Note>
+
+## Key Metrics to Analyze
+
+### GPU Utilization
+
+Look for:
+- **SM (Streaming Multiprocessor) utilization** - Should be >80% for good throughput
+- **Memory bandwidth utilization** - Should be >70% for memory-bound operations
+- **Tensor Core utilization** - Critical for FP16/BF16/FP8 matmuls
+
+### Kernel Patterns
+
+Identify:
+- **Dominant kernels** - Which operations consume most time?
+- **Launch overhead** - Are small kernels causing inefficiency?
+- **Synchronization gaps** - Are there idle periods between kernels?
+
+### Memory Access Patterns
+
+- **KV cache access** - Should show efficient blocked/paged access
+- **Activation memory** - Watch for unnecessary copies
+- **Memory allocations** - Frequent allocations indicate inefficiency
+
+## Common Profiling Patterns
+
+### Pattern 1: Low GPU Utilization
+
+**Symptom:** GPU utilization less than 50% in Nsight Systems
+
+**Possible causes:**
+- Batch size too small
+- CPU bottleneck in data loading
+- Insufficient parallelism
+
+**Solution:**
+- Increase `max_batch_size`
+- Check Python GIL markers for CPU contention
+- Enable CUDA graphs to reduce launch overhead
+
+### Pattern 2: Memory Bandwidth Bound
+
+**Symptom:** Memory bandwidth utilization greater than 90%, SM utilization less than 70%
+
+**Possible causes:**
+- Large model on limited memory bandwidth
+- Inefficient memory access patterns
+
+**Solution:**
+- Enable FP8 quantization (reduce data movement)
+- Use FP8 KV cache (2x memory savings)
+- Consider tensor parallelism to aggregate bandwidth
+
+### Pattern 3: Compute Bound
+
+**Symptom:** SM utilization greater than 90%, memory bandwidth less than 60%
+
+**Possible causes:**
+- Good problem! GPU is being fully utilized.
+
+**Optimization:**
+- Use faster GPUs (e.g., H100 vs A100)
+- Enable speculative decoding (reduce compute per token)
+
+### Pattern 4: Kernel Launch Overhead
+
+**Symptom:** Many short-duration kernels with gaps between them
+
+**Possible causes:**
+- No CUDA graphs enabled
+- Small batch sizes
+
+**Solution:**
+- Enable CUDA graphs:
+  ```yaml
+  cuda_graph_config:
+    enable_padding: true
+    max_batch_size: 32
+  ```
+
+## Profiling Best Practices
+
+<Tip>
+  **Profile representative workloads** - Use real or realistic synthetic data that matches production patterns.
+</Tip>
+
+<Tip>
+  **Profile steady state** - Skip warmup iterations (first 10-50) as they include compilation/initialization overhead.
+</Tip>
+
+<Tip>
+  **Use iteration ranges** - Profile 50-100 iterations for statistical significance without creating huge trace files.
+</Tip>
+
+<Tip>
+  **Compare configs** - Always profile baseline vs optimized configs to quantify improvements.
+</Tip>
+
+## Troubleshooting
+
+### Profile Files Too Large
+
+**Problem:** Nsight Systems creates multi-GB files
+
+**Solution:**
+- Use `-c cudaProfilerApi` with `TLLM_PROFILE_START_STOP` to limit profiled iterations
+- Reduce traced iterations (e.g., 10-50 instead of 100-500)
+- Disable unnecessary trace sources (e.g., remove `python-gil` if not needed)
+
+### Cannot Open Profile in Nsight Systems
+
+**Problem:** Nsight Systems version mismatch
+
+**Solution:**
+- Ensure Nsight Systems version matches or is newer than the profiler version
+- Download latest Nsight Systems from [NVIDIA Developer](https://developer.nvidia.com/nsight-systems)
+
+### Missing NVTX Markers
+
+**Problem:** No NVTX markers visible in trace
+
+**Solution:**
+- Ensure `-t nvtx` is specified in `nsys profile` command
+- For C++/TensorRT workflow: rebuild with `--nvtx` flag
+- Set `TLLM_LLMAPI_ENABLE_NVTX=1` for API-level markers
+
+## Performance Analysis Checklist
+
+- [ ] Profiled representative workload
+- [ ] Used `TLLM_PROFILE_START_STOP` to focus on steady-state iterations
+- [ ] Collected CUDA and NVTX traces
+- [ ] Analyzed GPU utilization (SM and memory bandwidth)
+- [ ] Identified dominant kernels
+- [ ] Checked for CPU bottlenecks (Python GIL markers)
+- [ ] Compared baseline vs optimized configurations
+- [ ] Documented findings and optimization opportunities
+
+## Related Resources
+
+<CardGroup cols={2}>
+  <Card title="Benchmarking" icon="chart-line" href="/performance/benchmarking">
+    Measure throughput and latency with trtllm-bench
+  </Card>
+  <Card title="Optimization Guide" icon="gauge-high" href="/performance/optimization-guide">
+    Performance tuning best practices
+  </Card>
+  <Card title="Nsight Systems Documentation" icon="arrow-up-right-from-square" href="https://docs.nvidia.com/nsight-systems/">
+    Official NVIDIA Nsight Systems guide
+  </Card>
+  <Card title="PyTorch Profiler" icon="arrow-up-right-from-square" href="https://pytorch.org/tutorials/recipes/recipes/profiler_recipe.html">
+    PyTorch profiler documentation
+  </Card>
+</CardGroup>

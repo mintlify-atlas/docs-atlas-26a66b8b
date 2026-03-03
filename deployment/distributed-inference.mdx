@@ -1,0 +1,591 @@
+---
+title: 'Distributed Inference'
+description: 'Scale TensorRT-LLM across multiple GPUs and nodes'
+---
+
+## Overview
+
+TensorRT-LLM supports multiple parallelism strategies for scaling inference:
+
+- **Tensor Parallelism (TP)**: Split model weights across GPUs
+- **Pipeline Parallelism (PP)**: Split layers across GPUs
+- **Expert Parallelism (EP)**: Split experts in MoE models
+- **Context Parallelism (CP)**: Split long sequences across GPUs
+- **Disaggregated Serving**: Separate prefill and decode phases
+
+## Tensor Parallelism
+
+Split model layers horizontally across multiple GPUs. Best for models that don't fit on a single GPU.
+
+### Single-Node Multi-GPU
+
+<CodeGroup>
+
+```python Python API
+from tensorrt_llm import LLM, SamplingParams
+
+# Split model across 4 GPUs
+llm = LLM(
+    model="meta-llama/Llama-3.1-70B-Instruct",
+    tensor_parallel_size=4
+)
+
+prompts = ["Hello", "The future of AI is"]
+outputs = llm.generate(prompts, SamplingParams(max_tokens=128))
+
+# Entry point must be protected for multi-GPU
+if __name__ == '__main__':
+    main()
+```
+
+```bash trtllm-serve
+# 4-way tensor parallelism
+trtllm-serve meta-llama/Llama-3.1-70B-Instruct \
+  --tp_size 4 \
+  --max_batch_size 128
+```
+
+</CodeGroup>
+
+<Note>
+  Tensor parallelism requires GPUs on the **same node** with fast interconnects (NVLink/NVSwitch).
+</Note>
+
+### Communication Backends
+
+TensorRT-LLM supports multiple orchestrators for multi-GPU communication:
+
+<Tabs>
+  <Tab title="MPI (Default)">
+    Uses MPI for GPU communication. Best for performance.
+    
+    ```python
+    llm = LLM(
+        model="meta-llama/Llama-3.1-70B-Instruct",
+        tensor_parallel_size=4,
+        orchestrator_type=None  # MPI is default
+    )
+    ```
+  </Tab>
+  
+  <Tab title="Ray">
+    Uses Ray for distributed execution. Better for dynamic scaling.
+    
+    ```python
+    llm = LLM(
+        model="meta-llama/Llama-3.1-70B-Instruct",
+        tensor_parallel_size=4,
+        orchestrator_type="ray"
+    )
+    ```
+    
+    Or force Ray globally:
+    ```bash
+    export TLLM_DISABLE_MPI=1
+    python inference.py
+    ```
+  </Tab>
+  
+  <Tab title="RPC">
+    Uses PyTorch RPC. Experimental.
+    
+    ```python
+    llm = LLM(
+        model="meta-llama/Llama-3.1-70B-Instruct",
+        tensor_parallel_size=4,
+        orchestrator_type="rpc"
+    )
+    ```
+  </Tab>
+</Tabs>
+
+## Pipeline Parallelism
+
+Split model layers vertically across GPUs. Each GPU processes a subset of layers.
+
+```python
+from tensorrt_llm import LLM
+
+# 4-stage pipeline
+llm = LLM(
+    model="meta-llama/Llama-3.1-70B-Instruct",
+    pipeline_parallel_size=4
+)
+```
+
+<Warning>
+  Pipeline parallelism has **bubble overhead** where GPUs wait for data. Use only when tensor parallelism isn't sufficient.
+</Warning>
+
+### Hybrid Parallelism
+
+Combine tensor and pipeline parallelism:
+
+```python
+# 2x4 = 8 GPUs total
+llm = LLM(
+    model="meta-llama/Llama-3.1-405B-Instruct",
+    tensor_parallel_size=4,    # 4 GPUs per pipeline stage
+    pipeline_parallel_size=2   # 2 pipeline stages
+)
+```
+
+<Tip>
+  Formula: `world_size = tp_size × pp_size`
+</Tip>
+
+## Expert Parallelism (MoE Models)
+
+For Mixture-of-Experts models like Mixtral or DeepSeek-V3:
+
+```python
+from tensorrt_llm import LLM
+from tensorrt_llm.llmapi import MoeConfig
+
+llm = LLM(
+    model="mistralai/Mixtral-8x7B-Instruct-v0.1",
+    tensor_parallel_size=2,
+    moe_expert_parallel_size=4,  # Split experts across 4 GPUs
+    moe_config=MoeConfig(
+        backend="CUTLASS"  # Optimized MoE kernel
+    )
+)
+```
+
+<Note>
+  Total GPUs: `tp_size × ep_size`. For Mixtral-8x7B: 2 × 4 = 8 GPUs.
+</Note>
+
+## Context Parallelism
+
+Split long sequences across GPUs using ring attention or Ulysses:
+
+```python
+from tensorrt_llm import LLM
+from tensorrt_llm.mapping import CpType
+
+llm = LLM(
+    model="meta-llama/Llama-3.1-8B-Instruct",
+    context_parallel_size=4,
+    cp_config={
+        "cp_type": CpType.ULYSSES  # or RING, STAR, HELIX
+    }
+)
+```
+
+<Accordion title="Context Parallelism Types">
+
+| Type | Description | Use Case |
+|------|-------------|----------|
+| `ULYSSES` | Split sequence dimension | Long sequences (>32K tokens) |
+| `RING` | Ring attention | Very long sequences (>128K) |
+| `STAR` | Star attention | Extreme lengths (>1M tokens) |
+| `HELIX` | Helix parallelism | MoE + context parallelism |
+
+</Accordion>
+
+## Multi-Node Deployment
+
+### Prerequisites
+
+<Steps>
+  <Step title="Install MPI">
+    ```bash
+    # Install OpenMPI or use Slurm's PMI
+    apt-get install libopenmpi-dev openmpi-bin
+    ```
+  </Step>
+  
+  <Step title="Configure network">
+    Ensure nodes can communicate:
+    ```bash
+    # Test connectivity
+    mpirun -np 16 -H node1:8,node2:8 hostname
+    ```
+  </Step>
+  
+  <Step title="Set up shared storage">
+    Models must be accessible from all nodes (NFS, S3, etc.)
+  </Step>
+</Steps>
+
+### Slurm Deployment
+
+```bash
+#!/bin/bash
+#SBATCH --nodes=2
+#SBATCH --ntasks-per-node=8
+#SBATCH --gres=gpu:8
+#SBATCH --time=24:00:00
+
+# Config file
+cat > config.yml <<EOF
+enable_attention_dp: true
+pytorch_backend_config:
+  enable_overlap_scheduler: true
+kv_cache_config:
+  free_gpu_memory_fraction: 0.95
+EOF
+
+# Launch with trtllm-llmapi-launch wrapper
+srun --mpi=pmix \
+  --container-image=nvcr.io/nvidia/tensorrt-llm:latest \
+  --container-mounts=/data:/data \
+  bash -c "trtllm-llmapi-launch trtllm-serve \
+    /data/models/deepseek-ai/DeepSeek-V3 \
+    --tp_size 16 \
+    --ep_size 4 \
+    --max_batch_size 161 \
+    --config ./config.yml"
+```
+
+<Note>
+  `trtllm-llmapi-launch` handles MPI process spawning and GPU assignment automatically.
+</Note>
+
+### Manual MPI Launch
+
+```bash
+# 2 nodes, 8 GPUs each
+mpirun -np 16 \
+  -H node1:8,node2:8 \
+  -x CUDA_VISIBLE_DEVICES \
+  --bind-to none \
+  python -m tensorrt_llm.commands.serve \
+    meta-llama/Llama-3.1-405B-Instruct \
+    --tp_size 16 \
+    --backend pytorch
+```
+
+## Disaggregated Serving
+
+Separate prefill (context) and decode (generation) phases onto different GPU pools for independent optimization.
+
+### Why Disaggregated Serving?
+
+<CardGroup cols={2}>
+  <Card title="Optimize TTFT" icon="gauge">
+    Dedicate GPUs to prefill with high parallelism for fast Time-to-First-Token
+  </Card>
+  <Card title="Optimize TPOT" icon="forward">
+    Dedicate GPUs to decode with batching for low Time-Per-Output-Token
+  </Card>
+  <Card title="Prevent Interference" icon="shield">
+    Prefill doesn't delay token generation
+  </Card>
+  <Card title="Different GPU Types" icon="server">
+    Use H100 for prefill, L40 for decode
+  </Card>
+</CardGroup>
+
+### Architecture
+
+<img src="https://github.com/NVIDIA/TensorRT-LLM/raw/main/docs/source/blogs/media/tech_blog5_Picture2.png" alt="Disaggregated Serving" />
+
+### Setup with trtllm-serve
+
+<Steps>
+  <Step title="Configure context servers">
+    ```yaml context-config.yml
+    disable_overlap_scheduler: true  # Not supported for context servers
+    cache_transceiver_config:
+      backend: NIXL  # or UCX, MPI
+      max_tokens_in_buffer: 8192
+    ```
+  </Step>
+  
+  <Step title="Start context servers">
+    ```bash
+    # Context server 1
+    CUDA_VISIBLE_DEVICES=0 trtllm-serve TinyLlama/TinyLlama-1.1B-Chat-v1.0 \
+      --host localhost --port 8001 \
+      --backend pytorch \
+      --config ./context-config.yml &
+    
+    # Context server 2
+    CUDA_VISIBLE_DEVICES=1 trtllm-serve TinyLlama/TinyLlama-1.1B-Chat-v1.0 \
+      --host localhost --port 8002 \
+      --backend pytorch \
+      --config ./context-config.yml &
+    ```
+  </Step>
+  
+  <Step title="Configure generation server">
+    ```yaml gen-config.yml
+    cache_transceiver_config:
+      backend: NIXL
+      max_tokens_in_buffer: 8192
+    ```
+  </Step>
+  
+  <Step title="Start generation server">
+    ```bash
+    CUDA_VISIBLE_DEVICES=2 trtllm-serve TinyLlama/TinyLlama-1.1B-Chat-v1.0 \
+      --host localhost --port 8003 \
+      --backend pytorch \
+      --config ./gen-config.yml &
+    ```
+  </Step>
+  
+  <Step title="Launch orchestrator">
+    ```yaml disagg-config.yml
+    hostname: localhost
+    port: 8000
+    backend: pytorch
+    context_servers:
+      num_instances: 2
+      urls:
+        - "localhost:8001"
+        - "localhost:8002"
+    generation_servers:
+      num_instances: 1
+      urls:
+        - "localhost:8003"
+    ```
+    
+    ```bash
+    trtllm-serve disaggregated -c disagg-config.yml
+    ```
+  </Step>
+</Steps>
+
+### KV Cache Exchange Backends
+
+<Tabs>
+  <Tab title="NIXL (Recommended)">
+    Default backend with dynamic scaling support.
+    
+    ```yaml
+    cache_transceiver_config:
+      backend: NIXL
+    ```
+    
+    Configure underlying protocol:
+    ```bash
+    export TRTLLM_NIXL_KVCACHE_BACKEND=UCX  # or LIBFABRIC
+    ```
+  </Tab>
+  
+  <Tab title="UCX">
+    Direct UCX backend for RDMA/NVLink.
+    
+    ```yaml
+    cache_transceiver_config:
+      backend: UCX
+      max_tokens_in_buffer: 8192
+    ```
+  </Tab>
+  
+  <Tab title="MPI">
+    MPI-based KV cache transfer.
+    
+    ```yaml
+    cache_transceiver_config:
+      backend: MPI
+      max_tokens_in_buffer: 8192
+    ```
+  </Tab>
+</Tabs>
+
+<Warning>
+  `max_tokens_in_buffer` should be ≥ maximum input sequence length for optimal performance.
+</Warning>
+
+### Client Usage
+
+```python
+from openai import OpenAI
+
+# Connect to disaggregated orchestrator
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="EMPTY")
+
+response = client.chat.completions.create(
+    model="TinyLlama-1.1B-Chat-v1.0",
+    messages=[{"role": "user", "content": "Explain quantum computing"}],
+    max_tokens=512
+)
+
+print(response.choices[0].message.content)
+```
+
+The orchestrator automatically:
+1. Routes request to context server (prefill)
+2. Transfers KV cache to generation server
+3. Generation server produces tokens
+4. Returns unified response
+
+## Performance Tuning
+
+### Overlap Scheduler (PyTorch)
+
+Enable compute/communication overlap for multi-GPU:
+
+```yaml
+pytorch_backend_config:
+  enable_overlap_scheduler: true
+```
+
+<Note>
+  Can improve throughput by 10-15% for TP ≥ 2.
+</Note>
+
+### Attention Data Parallelism
+
+Enable for models with TP:
+
+```yaml
+enable_attention_dp: true
+attention_dp_config:
+  enable_balance: true
+  timeout_iters: 10
+  batching_wait_iters: 5
+```
+
+### NCCL Optimization
+
+```bash
+# Enable NVLink for NCCL
+export NCCL_IB_DISABLE=0
+export NCCL_NET_GDR_LEVEL=5
+
+# Tune NCCL buffers
+export NCCL_BUFFSIZE=8388608
+export NCCL_P2P_LEVEL=NVL
+```
+
+## Examples
+
+### Llama-70B on 4 GPUs
+
+```bash
+trtllm-serve meta-llama/Llama-3.1-70B-Instruct \
+  --tp_size 4 \
+  --max_batch_size 128 \
+  --max_num_tokens 16384 \
+  --kv_cache_free_gpu_memory_fraction 0.95
+```
+
+### Llama-405B on 8 GPUs (Hybrid)
+
+```bash
+trtllm-serve meta-llama/Llama-3.1-405B-Instruct \
+  --tp_size 4 \
+  --pp_size 2 \
+  --max_batch_size 64 \
+  --config config.yml
+```
+
+### DeepSeek-V3 on 16 GPUs (2 Nodes)
+
+```bash
+srun -N 2 --ntasks 16 --mpi=pmix --gres=gpu:8 \
+  --container-image=nvcr.io/nvidia/tensorrt-llm:latest \
+  bash -c "trtllm-llmapi-launch trtllm-serve deepseek-ai/DeepSeek-V3 \
+    --tp_size 16 --ep_size 4 --config config.yml"
+```
+
+### Mixtral-8x7B with Expert Parallelism
+
+```python
+from tensorrt_llm import LLM
+from tensorrt_llm.llmapi import MoeConfig
+
+llm = LLM(
+    model="mistralai/Mixtral-8x7B-Instruct-v0.1",
+    tensor_parallel_size=2,
+    moe_expert_parallel_size=4,
+    moe_config=MoeConfig(backend="CUTLASS")
+)
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="MPI initialization fails">
+    **Error**: `MPI_Init failed`
+    
+    **Solutions**:
+    - Ensure MPI is installed: `mpirun --version`
+    - Use Ray orchestrator: `orchestrator_type="ray"`
+    - Set: `export TLLM_DISABLE_MPI=1`
+  </Accordion>
+  
+  <Accordion title="NCCL errors">
+    **Error**: `NCCL error: unhandled system error`
+    
+    **Solutions**:
+    - Check NCCL version: `python -c "import torch; print(torch.cuda.nccl.version())"`
+    - Enable debug: `export NCCL_DEBUG=INFO`
+    - Disable IB if not available: `export NCCL_IB_DISABLE=1`
+  </Accordion>
+  
+  <Accordion title="Disaggregated KV cache transfer fails">
+    **Error**: `Failed to transfer KV cache`
+    
+    **Solutions**:
+    - Increase `max_tokens_in_buffer` in config
+    - Try different backend: NIXL → UCX → MPI
+    - Check network connectivity between context and gen servers
+    - Verify `TRTLLM_NIXL_KVCACHE_BACKEND` env var
+  </Accordion>
+  
+  <Accordion title="Pipeline parallelism low throughput">
+    **Symptoms**: Low GPU utilization with PP
+    
+    **Solutions**:
+    - Prefer tensor parallelism over pipeline
+    - Increase `max_batch_size` to fill pipeline bubbles
+    - Use hybrid TP+PP only for very large models
+  </Accordion>
+</AccordionGroup>
+
+## Best Practices
+
+<Steps>
+  <Step title="Choose parallelism strategy">
+    - **Single GPU**: No parallelism
+    - **2-8 GPUs**: Tensor parallelism
+    - **>8 GPUs**: Hybrid TP + PP
+    - **MoE models**: Expert parallelism
+    - **Long sequences**: Context parallelism
+  </Step>
+  
+  <Step title="Use NVLink/NVSwitch">
+    TP requires fast GPU-to-GPU communication. Avoid PCIe-only setups.
+  </Step>
+  
+  <Step title="Enable overlap scheduler">
+    ```yaml
+    pytorch_backend_config:
+      enable_overlap_scheduler: true
+    ```
+  </Step>
+  
+  <Step title="Monitor communication overhead">
+    Check iteration latency in `/metrics` endpoint. High latency indicates communication bottleneck.
+  </Step>
+  
+  <Step title="Use disaggregated serving strategically">
+    Best for:
+    - Long prompts (>4K tokens) + short outputs
+    - Separate optimization of TTFT and TPOT
+    - Different GPU types for prefill vs decode
+  </Step>
+</Steps>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Production Guide" icon="rocket" href="/deployment/production">
+    Production deployment best practices
+  </Card>
+  <Card title="Benchmarking" icon="gauge" href="https://github.com/NVIDIA/TensorRT-LLM/blob/main/docs/source/developer-guide/perf-benchmarking.md">
+    Measure distributed performance
+  </Card>
+  <Card title="Reference Configs" icon="file" href="https://github.com/NVIDIA/TensorRT-LLM/tree/main/examples/configs/database">
+    170+ optimized configurations
+  </Card>
+  <Card title="Disaggregated Examples" icon="code" href="https://github.com/NVIDIA/TensorRT-LLM/tree/main/examples/disaggregated">
+    Complete disaggregated serving examples
+  </Card>
+</CardGroup>

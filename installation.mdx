@@ -1,0 +1,594 @@
+---
+title: Installation
+description: Install TensorRT-LLM using Docker, pip, or build from source on Linux systems
+---
+
+# Installation
+
+TensorRT-LLM can be installed in several ways depending on your needs. This guide covers all installation methods with system requirements and troubleshooting tips.
+
+## System Requirements
+
+Before installing TensorRT-LLM, ensure your system meets these requirements:
+
+### Hardware Requirements
+
+- **NVIDIA GPU** with compute capability 7.0 or higher:
+  - **Volta** (V100) - Compute capability 7.0
+  - **Turing** (T4) - Compute capability 7.5
+  - **Ampere** (A10, A100) - Compute capability 8.0, 8.6
+  - **Hopper** (H100, H200) - Compute capability 9.0
+  - **Blackwell** (B200) - Compute capability 10.0
+- **8GB+ GPU memory** minimum (16GB+ recommended for larger models)
+- **50GB+ free disk space** for Docker images and model caching
+
+### Software Requirements
+
+- **Operating System**: Ubuntu 22.04 or 24.04 LTS (recommended)
+- **NVIDIA Driver**: Version 535.x or newer
+- **CUDA**: Version 13.1 (automatically included in Docker containers)
+- **Python**: 3.10 or 3.12
+- **PyTorch**: 2.9.1 with CUDA 13.0 support
+
+<Warning>
+  TensorRT-LLM requires specific versions of CUDA and PyTorch for optimal compatibility. Using mismatched versions may cause runtime errors.
+</Warning>
+
+## Installation Methods
+
+<Tabs>
+  <Tab title="Docker (Recommended)">
+    ### Docker Installation
+
+    Docker is the **recommended** installation method as it includes all dependencies pre-configured and tested.
+
+    <Steps>
+      <Step title="Install NVIDIA Container Toolkit">
+        First, install Docker and the NVIDIA Container Toolkit to enable GPU access in containers:
+
+        ```bash
+        # Install Docker
+        curl -fsSL https://get.docker.com -o get-docker.sh
+        sudo sh get-docker.sh
+
+        # Install NVIDIA Container Toolkit
+        distribution=$(. /etc/os-release;echo $ID$VERSION_ID)
+        curl -s -L https://nvidia.github.io/nvidia-docker/gpgkey | sudo apt-key add -
+        curl -s -L https://nvidia.github.io/nvidia-docker/$distribution/nvidia-docker.list | \
+          sudo tee /etc/apt/sources.list.d/nvidia-docker.list
+
+        sudo apt-get update
+        sudo apt-get install -y nvidia-container-toolkit
+        sudo systemctl restart docker
+        ```
+
+        Verify GPU access:
+
+        ```bash
+        docker run --rm --gpus all nvidia/cuda:13.1.0-base-ubuntu22.04 nvidia-smi
+        ```
+      </Step>
+
+      <Step title="Pull the TensorRT-LLM container">
+        Download the latest release container from NGC:
+
+        ```bash
+        docker pull nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc6
+        ```
+
+        <Note>
+          Check the [NGC catalog](https://catalog.ngc.nvidia.com/orgs/nvidia/teams/tensorrt-llm/containers/release/tags) for the latest version tag.
+        </Note>
+
+        Available container types:
+        - **Release**: Ready-to-use with TensorRT-LLM pre-installed
+        - **Devel**: For development with build tools included
+      </Step>
+
+      <Step title="Launch the container">
+        Start a container with GPU access and port forwarding:
+
+        ```bash
+        docker run --rm -it \
+          --ipc host \
+          --gpus all \
+          --ulimit memlock=-1 \
+          --ulimit stack=67108864 \
+          -p 8000:8000 \
+          -v $(pwd):/workspace \
+          nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc6
+        ```
+
+        **Explanation of flags:**
+        - `--ipc host`: Required to prevent bus errors
+        - `--gpus all`: Enable all GPUs
+        - `--ulimit memlock=-1`: Unlimited locked memory
+        - `--ulimit stack=67108864`: Increased stack size
+        - `-p 8000:8000`: Expose port for trtllm-serve
+        - `-v $(pwd):/workspace`: Mount current directory
+      </Step>
+
+      <Step title="Verify installation">
+        Inside the container, verify TensorRT-LLM is installed:
+
+        ```bash
+        python3 -c "import tensorrt_llm; print(tensorrt_llm.__version__)"
+        ```
+
+        You should see the version number (e.g., `1.3.0rc6`).
+      </Step>
+    </Steps>
+  </Tab>
+
+  <Tab title="Pip Install">
+    ### Installing via pip
+
+    Install TensorRT-LLM as a Python package using pip on Ubuntu 24.04.
+
+    <Steps>
+      <Step title="Install CUDA Toolkit 13.1">
+        Install CUDA following the [official CUDA Installation Guide](https://docs.nvidia.com/cuda/cuda-installation-guide-linux/):
+
+        ```bash
+        # Download and install CUDA 13.1
+        wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+        sudo dpkg -i cuda-keyring_1.1-1_all.deb
+        sudo apt-get update
+        sudo apt-get -y install cuda-toolkit-13-1
+
+        # Set CUDA_HOME environment variable
+        export CUDA_HOME=/usr/local/cuda-13.1
+        export PATH=$CUDA_HOME/bin:$PATH
+        export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
+        ```
+
+        Add the exports to your `~/.bashrc` for persistence.
+      </Step>
+
+      <Step title="Install PyTorch with CUDA 13.0">
+        Install PyTorch 2.9.1 with CUDA 13.0 support:
+
+        ```bash
+        pip3 install torch==2.9.1 torchvision --index-url https://download.pytorch.org/whl/cu130
+        ```
+
+        <Warning>
+          The default PyTorch package uses CUDA 12.8, which is incompatible with TensorRT-LLM. You must install the CUDA 13.0 version.
+        </Warning>
+      </Step>
+
+      <Step title="Install system dependencies">
+        Install required system packages:
+
+        ```bash
+        sudo apt-get update
+        sudo apt-get -y install libopenmpi-dev
+
+        # Optional: Only required for disaggregated serving
+        sudo apt-get -y install libzmq3-dev
+        ```
+      </Step>
+
+      <Step title="Install TensorRT-LLM">
+        Install the TensorRT-LLM Python package:
+
+        ```bash
+        pip3 install --ignore-installed pip setuptools wheel
+        pip3 install tensorrt_llm
+        ```
+
+        <Info>
+          The installation may take several minutes as it downloads and installs dependencies including TensorRT and NCCL.
+        </Info>
+      </Step>
+
+      <Step title="Verify installation">
+        Test the installation with a simple script:
+
+        ```python
+        from tensorrt_llm import LLM, SamplingParams
+
+        llm = LLM(model="TinyLlama/TinyLlama-1.1B-Chat-v1.0")
+
+        prompts = [
+            "Hello, my name is",
+            "The capital of France is",
+        ]
+
+        sampling_params = SamplingParams(temperature=0.8, top_p=0.95)
+
+        for output in llm.generate(prompts, sampling_params):
+            print(f"Prompt: {output.prompt!r}, Generated: {output.outputs[0].text!r}")
+        ```
+      </Step>
+    </Steps>
+
+    ### Known Issues with Pip Installation
+
+    <AccordionGroup>
+      <Accordion title="PyTorch version conflicts">
+        On some systems, pip may replace your CUDA 13.0 PyTorch with the CUDA 12.8 version during installation.
+
+        **Solution**: Create a constraints file to lock PyTorch version:
+
+        ```bash
+        CURRENT_TORCH_VERSION=$(python3 -c "import torch; print(torch.__version__)")
+        echo "torch==$CURRENT_TORCH_VERSION" > /tmp/torch-constraint.txt
+        pip3 install tensorrt_llm -c /tmp/torch-constraint.txt
+        ```
+      </Accordion>
+
+      <Accordion title="MPI in Slurm environments">
+        If running in a Slurm-managed cluster, you may need to reconfigure MPI:
+
+        ```bash
+        # Check with your cluster administrator for Slurm-compatible MPI
+        # This is not TensorRT-LLM specific, but a general MPI+Slurm issue
+        ```
+
+        You may need to rebuild OpenMPI with `--with-slurm` flag.
+      </Accordion>
+    </AccordionGroup>
+  </Tab>
+
+  <Tab title="Build from Source">
+    ### Building from Source
+
+    Build TensorRT-LLM from source for maximum performance, debugging, or custom CXX11 ABI configurations.
+
+    <Steps>
+      <Step title="Clone the repository">
+        Clone TensorRT-LLM with all submodules:
+
+        ```bash
+        # Install git-lfs first
+        sudo apt-get update && sudo apt-get -y install git git-lfs
+        git lfs install
+
+        # Clone repository
+        git clone https://github.com/NVIDIA/TensorRT-LLM.git
+        cd TensorRT-LLM
+        git submodule update --init --recursive
+        git lfs pull
+        ```
+
+        <Info>
+          The repository is approximately 2GB and requires git-lfs for large files.
+        </Info>
+      </Step>
+
+      <Step title="Build development container">
+        Create a Docker development container:
+
+        ```bash
+        # Build the development image (~63GB disk space required)
+        make -C docker build
+
+        # Run the development container
+        make -C docker run
+        ```
+
+        Or without GNU make:
+
+        ```bash
+        docker build --pull \
+          --target devel \
+          --file docker/Dockerfile.multi \
+          --tag tensorrt_llm/devel:latest \
+          .
+
+        docker run --rm -it \
+          --ipc=host --ulimit memlock=-1 --ulimit stack=67108864 \
+          --gpus=all \
+          --volume ${PWD}:/code/tensorrt_llm \
+          --workdir /code/tensorrt_llm \
+          tensorrt_llm/devel:latest
+        ```
+
+        <Tip>
+          You can also pull a pre-built development container from [NGC](https://catalog.ngc.nvidia.com/orgs/nvidia/teams/tensorrt-llm/containers/devel) instead of building it.
+        </Tip>
+      </Step>
+
+      <Step title="Build TensorRT-LLM">
+        Inside the development container, build TensorRT-LLM:
+
+        **Option A: Full build with C++ compilation**
+
+        ```bash
+        # Build C++ runtime and Python bindings
+        python3 scripts/build_wheel.py --clean --trt_root /usr/local/tensorrt
+        
+        # Install the wheel
+        pip3 install build/tensorrt_llm*.whl
+        ```
+
+        **Option B: Quick Python-only build**
+
+        ```bash
+        # Install in development mode (no C++ compilation)
+        pip3 install -e .
+        ```
+
+        <Note>
+          The full build takes 30-60 minutes depending on your CPU. The Python-only build is much faster but doesn't include C++ optimizations.
+        </Note>
+      </Step>
+
+      <Step title="Build with specific GPU architectures (optional)">
+        To reduce build time, compile only for your GPU architecture:
+
+        ```bash
+        # Ada and Hopper only (RTX 40xx, H100)
+        python3 scripts/build_wheel.py --cuda_architectures "89-real;90-real"
+
+        # Ampere only (A100, A10)
+        python3 scripts/build_wheel.py --cuda_architectures "80-real;86-real"
+        ```
+
+        Available architectures:
+        - `70`: Volta (V100)
+        - `75`: Turing (T4)
+        - `80,86`: Ampere (A100, A10)
+        - `89`: Ada (RTX 40xx)
+        - `90`: Hopper (H100, H200)
+        - `100`: Blackwell (B200)
+      </Step>
+
+      <Step title="Verify the build">
+        Test the built package:
+
+        ```bash
+        python3 -c "import tensorrt_llm; print(tensorrt_llm.__version__)"
+        python3 -c "from tensorrt_llm import LLM; print('LLM API available')"
+        ```
+      </Step>
+    </Steps>
+
+    ### Build Options
+
+    The `build_wheel.py` script supports many options:
+
+    ```bash
+    # Clean build
+    python3 scripts/build_wheel.py --clean
+
+    # Enable debug symbols
+    python3 scripts/build_wheel.py --build_type=Debug
+
+    # Parallel build with N jobs
+    python3 scripts/build_wheel.py -j 8
+
+    # Specify TensorRT root
+    python3 scripts/build_wheel.py --trt_root /path/to/tensorrt
+
+    # Use old CXX11 ABI
+    python3 scripts/build_wheel.py --use_old_abi
+    ```
+  </Tab>
+</Tabs>
+
+## Verifying Your Installation
+
+After installation, run this comprehensive test:
+
+```python test_installation.py
+import sys
+import torch
+from tensorrt_llm import LLM, SamplingParams
+
+print("=" * 50)
+print("TensorRT-LLM Installation Check")
+print("=" * 50)
+
+# Check Python version
+print(f"Python version: {sys.version}")
+
+# Check PyTorch and CUDA
+print(f"PyTorch version: {torch.__version__}")
+print(f"CUDA available: {torch.cuda.is_available()}")
+if torch.cuda.is_available():
+    print(f"CUDA version: {torch.version.cuda}")
+    print(f"GPU: {torch.cuda.get_device_name(0)}")
+    print(f"GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
+
+# Check TensorRT-LLM
+import tensorrt_llm
+print(f"TensorRT-LLM version: {tensorrt_llm.__version__}")
+
+# Quick inference test
+print("\nRunning quick inference test...")
+try:
+    llm = LLM(model="TinyLlama/TinyLlama-1.1B-Chat-v1.0")
+    output = llm.generate("Hello, my name is", SamplingParams(max_tokens=10))
+    print(f"✓ Inference successful!")
+    print(f"  Generated: {output[0].outputs[0].text}")
+except Exception as e:
+    print(f"✗ Inference failed: {e}")
+
+print("\n" + "=" * 50)
+```
+
+## Environment Configuration
+
+### Recommended Environment Variables
+
+```bash
+# CUDA paths
+export CUDA_HOME=/usr/local/cuda-13.1
+export PATH=$CUDA_HOME/bin:$PATH
+export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
+
+# TensorRT-LLM settings
+export TRTLLM_LOG_LEVEL=INFO  # DEBUG, INFO, WARNING, ERROR
+
+# Model cache directory (default: ~/.cache/huggingface)
+export HF_HOME=/path/to/model/cache
+
+# HuggingFace token for private models
+export HF_TOKEN=your_hf_token_here
+
+# Multi-GPU settings
+export NCCL_DEBUG=INFO  # For debugging distributed training
+export CUDA_VISIBLE_DEVICES=0,1,2,3  # Specify GPUs to use
+```
+
+### Performance Tuning
+
+```bash
+# Enable TensorFloat-32 on Ampere+ GPUs
+export NVIDIA_TF32_OVERRIDE=1
+
+# Disable cudnn benchmarking (faster startup)
+export CUDNN_BENCHMARK=0
+
+# Increase shared memory for large models
+export NCCL_SHM_DISABLE=0
+```
+
+## Upgrading TensorRT-LLM
+
+<Tabs>
+  <Tab title="Docker">
+    Pull the latest container:
+
+    ```bash
+    docker pull nvcr.io/nvidia/tensorrt-llm/release:latest
+    ```
+  </Tab>
+
+  <Tab title="Pip">
+    Upgrade via pip:
+
+    ```bash
+    pip3 install --upgrade tensorrt_llm
+    ```
+  </Tab>
+
+  <Tab title="Source">
+    Pull latest changes and rebuild:
+
+    ```bash
+    cd TensorRT-LLM
+    git pull
+    git submodule update --recursive
+    git lfs pull
+    
+    # Rebuild
+    python3 scripts/build_wheel.py --clean
+    pip3 install --force-reinstall build/tensorrt_llm*.whl
+    ```
+  </Tab>
+</Tabs>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="CUDA out of memory errors">
+    **Symptoms**: `RuntimeError: CUDA out of memory`
+
+    **Solutions**:
+    1. Use a smaller model or quantized version
+    2. Reduce batch size or sequence length
+    3. Enable KV cache offloading
+    4. Use tensor parallelism across multiple GPUs
+    5. Check for memory leaks (restart Python kernel)
+
+    ```python
+    from tensorrt_llm import LLM, KvCacheConfig
+    
+    llm = LLM(
+        model="TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+        kv_cache_config=KvCacheConfig(free_gpu_memory_fraction=0.6)
+    )
+    ```
+  </Accordion>
+
+  <Accordion title="Import errors">
+    **Symptoms**: `ModuleNotFoundError` or `ImportError`
+
+    **Solutions**:
+    1. Verify PyTorch CUDA version matches TensorRT-LLM:
+       ```bash
+       python3 -c "import torch; print(torch.version.cuda)"
+       ```
+    2. Check for conflicting installations:
+       ```bash
+       pip list | grep tensorrt
+       ```
+    3. Reinstall with correct PyTorch:
+       ```bash
+       pip3 uninstall tensorrt_llm torch
+       pip3 install torch==2.9.1 --index-url https://download.pytorch.org/whl/cu130
+       pip3 install tensorrt_llm
+       ```
+  </Accordion>
+
+  <Accordion title="Driver/CUDA version mismatch">
+    **Symptoms**: `CUDA driver version is insufficient for CUDA runtime version`
+
+    **Solutions**:
+    1. Update NVIDIA driver:
+       ```bash
+       ubuntu-drivers devices
+       sudo apt install nvidia-driver-535
+       ```
+    2. Or use CUDA compatibility package:
+       ```bash
+       sudo apt-get install cuda-compat-13-1
+       ```
+    3. Verify driver version:
+       ```bash
+       nvidia-smi
+       ```
+  </Accordion>
+
+  <Accordion title="Compilation errors when building from source">
+    **Symptoms**: Build failures with GCC/C++ errors
+
+    **Solutions**:
+    1. Ensure you're using the development container
+    2. Update submodules:
+       ```bash
+       git submodule update --init --recursive
+       ```
+    3. Clean build directory:
+       ```bash
+       rm -rf build/
+       python3 scripts/build_wheel.py --clean
+       ```
+    4. Check disk space (requires 63GB+)
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+Now that TensorRT-LLM is installed, you can:
+
+<CardGroup cols={2}>
+  <Card title="Try the Quickstart" icon="rocket" href="/quickstart">
+    Run your first inference in minutes with simple examples
+  </Card>
+  <Card title="Explore Examples" icon="code" href="https://nvidia.github.io/TensorRT-LLM/examples/llm_api_examples.html">
+    Learn advanced features like speculative decoding and multi-GPU inference
+  </Card>
+  <Card title="Deploy Models" icon="server" href="https://nvidia.github.io/TensorRT-LLM/deployment-guide/index.html">
+    Production deployment guides for popular models
+  </Card>
+  <Card title="Optimize Performance" icon="gauge" href="https://nvidia.github.io/TensorRT-LLM/performance/performance-tuning-guide/benchmarking-default-performance.html">
+    Benchmark and tune for maximum throughput
+  </Card>
+</CardGroup>
+
+## Getting Help
+
+If you encounter issues:
+
+- **Documentation**: [nvidia.github.io/TensorRT-LLM](https://nvidia.github.io/TensorRT-LLM/)
+- **GitHub Issues**: [github.com/NVIDIA/TensorRT-LLM/issues](https://github.com/NVIDIA/TensorRT-LLM/issues)
+- **NGC Support**: [NGC Support Portal](https://ngc.nvidia.com/support)
+- **Developer Forums**: [NVIDIA Developer Forums](https://forums.developer.nvidia.com/)
+
+<Tip>
+  When reporting issues, include your GPU model, driver version, TensorRT-LLM version, and a minimal reproducible example.
+</Tip>

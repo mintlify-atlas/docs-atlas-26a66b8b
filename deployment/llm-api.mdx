@@ -1,0 +1,485 @@
+---
+title: 'Python LLM API'
+description: 'Use TensorRT-LLM programmatically with the high-level Python API'
+---
+
+## Overview
+
+The TensorRT-LLM Python API provides a high-level interface for inference without managing servers. It's ideal for:
+
+- Batch processing and offline inference
+- Integration into Python applications
+- Research and experimentation
+- Custom inference pipelines
+
+## Quick Start
+
+<CodeGroup>
+
+```python Basic Usage
+from tensorrt_llm import LLM, SamplingParams
+
+# Initialize LLM (downloads model if needed)
+llm = LLM(model="TinyLlama/TinyLlama-1.1B-Chat-v1.0")
+
+# Define prompts
+prompts = [
+    "Hello, my name is",
+    "The capital of France is",
+    "The future of AI is",
+]
+
+# Configure sampling
+sampling_params = SamplingParams(temperature=0.8, top_p=0.95, max_tokens=64)
+
+# Generate (synchronous)
+for output in llm.generate(prompts, sampling_params):
+    print(f"Prompt: {output.prompt!r}")
+    print(f"Generated: {output.outputs[0].text!r}\n")
+```
+
+```python Async Generation
+import asyncio
+from tensorrt_llm import LLM, SamplingParams
+
+llm = LLM(model="TinyLlama/TinyLlama-1.1B-Chat-v1.0")
+sampling_params = SamplingParams(temperature=0.8, top_p=0.95)
+
+async def generate_async(prompt: str):
+    output = await llm.generate_async(prompt, sampling_params)
+    print(f"Prompt: {output.prompt!r}, Generated: {output.outputs[0].text!r}")
+
+async def main():
+    prompts = ["Hello", "The capital of France is", "AI is"]
+    tasks = [generate_async(prompt) for prompt in prompts]
+    await asyncio.gather(*tasks)
+
+asyncio.run(main())
+```
+
+</CodeGroup>
+
+## LLM Class
+
+### Constructor Arguments
+
+<ParamField path="model" type="str" required>
+  HuggingFace model name, local path, or TensorRT engine directory
+</ParamField>
+
+<ParamField path="backend" type="str" default="pytorch">
+  Inference backend: `pytorch`, `tensorrt`, or `_autodeploy`
+</ParamField>
+
+<ParamField path="tensor_parallel_size" type="int" default="1">
+  Number of GPUs for tensor parallelism
+</ParamField>
+
+<ParamField path="pipeline_parallel_size" type="int" default="1">
+  Number of GPUs for pipeline parallelism
+</ParamField>
+
+<ParamField path="max_batch_size" type="int" default="256">
+  Maximum number of requests in a batch
+</ParamField>
+
+<ParamField path="max_num_tokens" type="int" default="8192">
+  Maximum tokens across all sequences in a batch
+</ParamField>
+
+<ParamField path="max_seq_len" type="int">
+  Maximum sequence length (prompt + generation). Auto-detected if not specified.
+</ParamField>
+
+<ParamField path="kv_cache_config" type="KvCacheConfig">
+  KV cache configuration (see [KV Cache Configuration](#kv-cache-configuration))
+</ParamField>
+
+<ParamField path="trust_remote_code" type="bool" default="false">
+  Allow execution of custom model code from HuggingFace
+</ParamField>
+
+## Generation Methods
+
+### `generate()` - Synchronous
+
+```python
+outputs = llm.generate(
+    inputs=["Prompt 1", "Prompt 2"],  # Single or list of prompts
+    sampling_params=SamplingParams(temperature=0.7),
+    use_tqdm=True  # Show progress bar
+)
+
+for output in outputs:
+    print(output.prompt)
+    for sequence in output.outputs:
+        print(sequence.text)
+```
+
+### `generate_async()` - Asynchronous
+
+```python
+async def process_request(prompt: str):
+    output = await llm.generate_async(
+        inputs=prompt,
+        sampling_params=SamplingParams(max_tokens=128),
+        streaming=True  # Enable streaming
+    )
+    
+    # For streaming responses
+    async for chunk in output:
+        if not chunk.finished:
+            print(chunk.outputs[0].text, end="", flush=True)
+```
+
+<Tip>
+  Use `generate_async()` for high-throughput serving or when you need fine-grained control over request scheduling.
+</Tip>
+
+## SamplingParams
+
+Control generation behavior with `SamplingParams`:
+
+```python
+from tensorrt_llm import SamplingParams
+
+sampling_params = SamplingParams(
+    # Decoding strategy
+    temperature=0.8,           # Randomness (0.0 = deterministic)
+    top_k=50,                  # Top-K sampling
+    top_p=0.95,                # Nucleus sampling
+    
+    # Length control
+    max_tokens=512,            # Max generated tokens
+    min_tokens=10,             # Min generated tokens
+    
+    # Multiple outputs
+    n=1,                       # Number of completions per prompt
+    best_of=1,                 # Generate N, return best
+    
+    # Beam search
+    use_beam_search=False,
+    
+    # Logprobs
+    logprobs=5,                # Return top-5 logprobs per token
+    prompt_logprobs=True,      # Return logprobs for prompt tokens
+    
+    # Stop conditions
+    stop=["\n\n", "END"],      # Custom stop strings
+    
+    # Advanced
+    frequency_penalty=0.0,     # Penalize repeated tokens
+    presence_penalty=0.0,      # Penalize already-seen tokens
+    repetition_penalty=1.0,    # Repetition penalty
+)
+```
+
+## Advanced Configuration
+
+### KV Cache Configuration
+
+```python
+from tensorrt_llm import LLM
+from tensorrt_llm.llmapi import KvCacheConfig
+
+llm = LLM(
+    model="meta-llama/Llama-3.1-8B-Instruct",
+    kv_cache_config=KvCacheConfig(
+        free_gpu_memory_fraction=0.95,  # Use 95% of free GPU memory
+        enable_block_reuse=True,        # Enable KV cache reuse
+        dtype="fp8",                    # FP8 quantization for KV cache
+        tokens_per_block=32,            # Tokens per cache block
+    )
+)
+```
+
+### Multi-GPU Inference
+
+<CodeGroup>
+
+```python Tensor Parallelism
+from tensorrt_llm import LLM
+
+# Tensor parallelism (split model across GPUs)
+llm = LLM(
+    model="meta-llama/Llama-3.1-70B-Instruct",
+    tensor_parallel_size=4,  # Use 4 GPUs
+    backend="pytorch"
+)
+```
+
+```python Pipeline Parallelism
+# Pipeline parallelism (split layers across GPUs)
+llm = LLM(
+    model="meta-llama/Llama-3.1-70B-Instruct",
+    pipeline_parallel_size=4  # 4-stage pipeline
+)
+```
+
+```python Hybrid Parallelism
+# Combine tensor and pipeline parallelism
+llm = LLM(
+    model="meta-llama/Llama-3.1-405B-Instruct",
+    tensor_parallel_size=4,
+    pipeline_parallel_size=2,  # Total: 8 GPUs
+)
+```
+
+</CodeGroup>
+
+<Warning>
+  When using multi-GPU inference, protect the entry point with `if __name__ == '__main__':` to avoid spawning issues.
+</Warning>
+
+### MoE Models
+
+```python
+from tensorrt_llm import LLM
+from tensorrt_llm.llmapi import MoeConfig
+
+llm = LLM(
+    model="mistralai/Mixtral-8x7B-Instruct-v0.1",
+    tensor_parallel_size=2,
+    moe_expert_parallel_size=2,  # Expert parallelism
+    moe_config=MoeConfig(
+        backend="CUTLASS",  # MoE kernel backend
+    )
+)
+```
+
+### Speculative Decoding
+
+```python
+from tensorrt_llm import LLM
+from tensorrt_llm.llmapi import DraftTargetDecodingConfig
+
+llm = LLM(
+    model="meta-llama/Llama-3.1-70B-Instruct",
+    speculative_config=DraftTargetDecodingConfig(
+        max_draft_len=5,
+        speculative_model="TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+    )
+)
+```
+
+<Tip>
+  Speculative decoding uses a smaller draft model to speed up generation of the larger target model.
+</Tip>
+
+## Streaming Responses
+
+```python
+import asyncio
+from tensorrt_llm import LLM, SamplingParams
+
+llm = LLM(model="meta-llama/Llama-3.1-8B-Instruct")
+
+async def stream_response(prompt: str):
+    output = await llm.generate_async(
+        prompt,
+        sampling_params=SamplingParams(max_tokens=512),
+        streaming=True
+    )
+    
+    async for chunk in output:
+        if not chunk.finished:
+            # Print incremental tokens
+            print(chunk.outputs[0].text, end="", flush=True)
+        else:
+            # Final output
+            print("\n--- Generation complete ---")
+            print(f"Total tokens: {len(chunk.outputs[0].token_ids)}")
+
+asyncio.run(stream_response("Tell me a story about"))
+```
+
+## Performance Monitoring
+
+### Runtime Statistics
+
+```python
+llm = LLM(model="meta-llama/Llama-3.1-8B-Instruct")
+
+# Enable performance metrics
+llm.generate(prompts, sampling_params)
+
+# Get statistics
+stats = llm.get_stats(timeout=2.0)
+for stat in stats:
+    print(f"Iteration {stat['iter']}:")
+    print(f"  GPU Memory: {stat['gpuMemUsage'] / 1e9:.2f} GB")
+    print(f"  KV Cache Hit Rate: {stat['kvCacheStats']['cacheHitRate']:.2%}")
+    print(f"  Active Requests: {stat['numActiveRequests']}")
+```
+
+### Async Statistics
+
+```python
+async def monitor_stats():
+    async for stats in llm.get_stats_async(timeout=2.0):
+        print(f"Iteration latency: {stats['iterLatencyMS']:.2f}ms")
+        print(f"Free KV blocks: {stats['kvCacheStats']['freeNumBlocks']}")
+```
+
+## LoRA Adapters
+
+```python
+from tensorrt_llm import LLM, SamplingParams
+from tensorrt_llm.executor import LoRARequest
+from tensorrt_llm.llmapi import LoraConfig
+
+# Initialize with LoRA config
+llm = LLM(
+    model="meta-llama/Llama-3.1-8B-Instruct",
+    lora_config=LoraConfig(
+        lora_dir=["./lora-adapter-1", "./lora-adapter-2"],
+        max_loras=4
+    )
+)
+
+# Use LoRA adapter for specific request
+lora_request = LoRARequest(lora_name="adapter1", lora_int_id=1, lora_path="./lora-adapter-1")
+
+output = llm.generate(
+    "Write a poem about",
+    sampling_params=SamplingParams(max_tokens=128),
+    lora_request=lora_request
+)
+```
+
+## Quantization
+
+Use pre-quantized models from NVIDIA Model Optimizer:
+
+```python
+llm = LLM(
+    model="nvidia/Llama-3.1-8B-Instruct-FP8",  # FP8 quantized model
+    backend="pytorch"
+)
+```
+
+Or quantize on-the-fly with AutoDeploy:
+
+```python
+from tensorrt_llm.llmapi import QuantConfig
+
+llm = LLM(
+    model="meta-llama/Llama-3.1-8B-Instruct",
+    backend="_autodeploy",
+    quant_config=QuantConfig(quant_algo="FP8", kv_cache_quant_algo="FP8")
+)
+```
+
+## Complete Example: Chat Application
+
+```python
+import asyncio
+from typing import List, Dict
+from tensorrt_llm import LLM, SamplingParams
+
+class ChatBot:
+    def __init__(self, model_name: str):
+        self.llm = LLM(model=model_name)
+        self.conversation_history: List[Dict[str, str]] = []
+    
+    def format_prompt(self, message: str) -> str:
+        """Format conversation history + new message."""
+        self.conversation_history.append({"role": "user", "content": message})
+        
+        # Use tokenizer's chat template
+        prompt = self.llm.tokenizer.apply_chat_template(
+            self.conversation_history,
+            tokenize=False,
+            add_generation_prompt=True
+        )
+        return prompt
+    
+    async def chat(self, message: str) -> str:
+        """Send a message and get response."""
+        prompt = self.format_prompt(message)
+        
+        sampling_params = SamplingParams(
+            temperature=0.7,
+            top_p=0.9,
+            max_tokens=512
+        )
+        
+        output = await self.llm.generate_async(prompt, sampling_params)
+        response = output.outputs[0].text
+        
+        # Add assistant response to history
+        self.conversation_history.append({"role": "assistant", "content": response})
+        
+        return response
+
+async def main():
+    chatbot = ChatBot("meta-llama/Llama-3.1-8B-Instruct")
+    
+    print("Chatbot ready! Type 'quit' to exit.\n")
+    
+    while True:
+        user_input = input("You: ")
+        if user_input.lower() == "quit":
+            break
+        
+        response = await chatbot.chat(user_input)
+        print(f"Bot: {response}\n")
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+## Context Manager Usage
+
+```python
+from tensorrt_llm import LLM, SamplingParams
+
+# Automatic cleanup with context manager
+with LLM(model="TinyLlama/TinyLlama-1.1B-Chat-v1.0") as llm:
+    outputs = llm.generate(["Hello world"], SamplingParams())
+    for output in outputs:
+        print(output.outputs[0].text)
+
+# LLM is automatically shut down here
+```
+
+## Best Practices
+
+<Steps>
+  <Step title="Reuse LLM instances">
+    Creating an `LLM` instance is expensive (loads model weights). Reuse the same instance for multiple requests.
+  </Step>
+  
+  <Step title="Use async for high throughput">
+    `generate_async()` allows batching and better GPU utilization for concurrent requests.
+  </Step>
+  
+  <Step title="Tune KV cache settings">
+    Adjust `free_gpu_memory_fraction` based on your workload. Higher values allow more concurrent requests.
+  </Step>
+  
+  <Step title="Enable KV cache reuse">
+    Set `enable_block_reuse=True` for workloads with common prompt prefixes (e.g., system prompts).
+  </Step>
+  
+  <Step title="Monitor GPU memory">
+    Use `get_stats()` to track KV cache utilization and avoid OOM errors.
+  </Step>
+</Steps>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="trtllm-serve" icon="server" href="/deployment/trtllm-serve">
+    Deploy with OpenAI-compatible REST API
+  </Card>
+  <Card title="Distributed Inference" icon="network-wired" href="/deployment/distributed-inference">
+    Scale to multi-GPU and multi-node
+  </Card>
+  <Card title="API Reference" icon="book" href="https://nvidia.github.io/TensorRT-LLM/llm-api/reference.html">
+    Complete API documentation
+  </Card>
+  <Card title="Examples" icon="code" href="https://github.com/NVIDIA/TensorRT-LLM/tree/main/examples/llm-api">
+    More code examples on GitHub
+  </Card>
+</CardGroup>

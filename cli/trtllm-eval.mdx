@@ -1,0 +1,300 @@
+---
+title: trtllm-eval
+description: Evaluate TensorRT-LLM model accuracy on standard benchmarks
+---
+
+Evaluate TensorRT-LLM model accuracy on standard benchmarks including MMLU, GSM8K, CNN/DailyMail, GPQA, MMMU, and LongBench datasets.
+
+## Usage
+
+```bash
+trtllm-eval [OPTIONS] COMMAND
+```
+
+## Global Options
+
+<ParamField path="--model" type="string" required>
+  Model name, HuggingFace checkpoint path, or TensorRT engine path
+</ParamField>
+
+<ParamField path="--tokenizer" type="string">
+  Path or name of the tokenizer. Specify this value only if using TensorRT engine as model
+</ParamField>
+
+<ParamField path="--custom_tokenizer" type="string">
+  Custom tokenizer type: alias (e.g., 'deepseek_v32') or Python import path (e.g., 'tensorrt_llm.tokenizer.deepseek_v32.DeepseekV32Tokenizer')
+</ParamField>
+
+<ParamField path="--backend" type="string" default="pytorch">
+  Backend to use for evaluation. Choices: `pytorch`, `tensorrt`
+</ParamField>
+
+<ParamField path="--log_level" type="string" default="info">
+  The logging level. Choices: `verbose`, `info`, `warning`, `error`, `internal_error`
+</ParamField>
+
+## Model Configuration
+
+<ParamField path="--max_batch_size" type="integer" default="8">
+  Maximum number of requests that the engine can schedule
+</ParamField>
+
+<ParamField path="--max_num_tokens" type="integer" default="2048">
+  Maximum number of batched input tokens after padding is removed in each batch
+</ParamField>
+
+<ParamField path="--max_seq_len" type="integer">
+  Maximum total length of one request, including prompt and outputs. If unspecified, the value is deduced from the model config
+</ParamField>
+
+<ParamField path="--max_beam_width" type="integer" default="1">
+  Maximum number of beams for beam search decoding
+</ParamField>
+
+## Parallelism Options
+
+<ParamField path="--tp_size" type="integer" default="1">
+  Tensor parallelism size
+</ParamField>
+
+<ParamField path="--pp_size" type="integer" default="1">
+  Pipeline parallelism size
+</ParamField>
+
+<ParamField path="--ep_size" type="integer">
+  Expert parallelism size (for MoE models)
+</ParamField>
+
+<ParamField path="--gpus_per_node" type="integer">
+  Number of GPUs per node. Defaults to automatic detection
+</ParamField>
+
+## Memory Options
+
+<ParamField path="--kv_cache_free_gpu_memory_fraction" type="float" default="0.9">
+  Free GPU memory fraction reserved for KV Cache, after allocating model weights and buffers
+</ParamField>
+
+<ParamField path="--disable_kv_cache_reuse" type="boolean" default="false">
+  Flag for disabling KV cache reuse
+</ParamField>
+
+## Advanced Options
+
+<ParamField path="--config" type="string">
+  Path to a YAML file that overwrites the parameters. Can be specified as either `--config` or `--extra_llm_api_options`
+</ParamField>
+
+<ParamField path="--trust_remote_code" type="boolean" default="false">
+  Flag for HuggingFace transformers to trust remote code
+</ParamField>
+
+<ParamField path="--revision" type="string">
+  The revision to use for the HuggingFace model (branch name, tag name, or commit id)
+</ParamField>
+
+## Evaluation Tasks
+
+### mmlu
+
+Evaluate on the MMLU (Massive Multitask Language Understanding) benchmark.
+
+```bash
+trtllm-eval --model MODEL mmlu [OPTIONS]
+```
+
+### gsm8k
+
+Evaluate on the GSM8K (Grade School Math 8K) benchmark.
+
+```bash
+trtllm-eval --model MODEL gsm8k [OPTIONS]
+```
+
+### cnn-dailymail
+
+Evaluate on the CNN/DailyMail summarization benchmark.
+
+```bash
+trtllm-eval --model MODEL cnn-dailymail [OPTIONS]
+```
+
+### gpqa-diamond
+
+Evaluate on the GPQA Diamond benchmark.
+
+```bash
+trtllm-eval --model MODEL gpqa-diamond [OPTIONS]
+```
+
+### gpqa-main
+
+Evaluate on the GPQA Main benchmark.
+
+```bash
+trtllm-eval --model MODEL gpqa-main [OPTIONS]
+```
+
+### gpqa-extended
+
+Evaluate on the GPQA Extended benchmark.
+
+```bash
+trtllm-eval --model MODEL gpqa-extended [OPTIONS]
+```
+
+### mmmu
+
+Evaluate on the MMMU (Massive Multi-discipline Multimodal Understanding) benchmark.
+
+```bash
+trtllm-eval --model MODEL mmmu [OPTIONS]
+```
+
+### longbench-v1
+
+Evaluate on the LongBench v1 benchmark.
+
+```bash
+trtllm-eval --model MODEL longbench-v1 [OPTIONS]
+```
+
+### longbench-v2
+
+Evaluate on the LongBench v2 benchmark.
+
+```bash
+trtllm-eval --model MODEL longbench-v2 [OPTIONS]
+```
+
+### json-mode
+
+Evaluate JSON mode generation capabilities.
+
+```bash
+trtllm-eval --model MODEL json-mode [OPTIONS]
+```
+
+## Examples
+
+### MMLU Evaluation
+
+Run MMLU evaluation on a model:
+
+```bash
+trtllm-eval --model meta-llama/Llama-3.1-8B-Instruct \
+  --backend pytorch \
+  mmlu
+```
+
+### GSM8K with TensorRT Backend
+
+Evaluate math reasoning with TensorRT:
+
+```bash
+trtllm-eval --model meta-llama/Llama-3.1-8B-Instruct \
+  --backend tensorrt \
+  gsm8k
+```
+
+### Multi-GPU Evaluation
+
+Run evaluation with tensor parallelism:
+
+```bash
+trtllm-eval --model meta-llama/Llama-3.1-70B-Instruct \
+  --tp_size 4 \
+  mmlu
+```
+
+### CNN/DailyMail Summarization
+
+Evaluate summarization capabilities:
+
+```bash
+trtllm-eval --model meta-llama/Llama-3.1-8B-Instruct \
+  cnn-dailymail
+```
+
+### With Custom Configuration
+
+Use a YAML configuration file:
+
+```bash
+trtllm-eval --model meta-llama/Llama-3.1-8B-Instruct \
+  --config eval_config.yaml \
+  mmlu
+```
+
+### LongBench Evaluation
+
+Evaluate long-context capabilities:
+
+```bash
+trtllm-eval --model meta-llama/Llama-3.1-8B-Instruct \
+  --max_seq_len 32768 \
+  longbench-v2
+```
+
+### Custom Tokenizer
+
+Evaluate with a custom tokenizer:
+
+```bash
+trtllm-eval --model /path/to/model \
+  --tokenizer /path/to/tokenizer \
+  mmlu
+```
+
+### High Batch Size for Speed
+
+Maximize evaluation throughput:
+
+```bash
+trtllm-eval --model meta-llama/Llama-3.1-8B-Instruct \
+  --max_batch_size 64 \
+  --max_num_tokens 16384 \
+  mmlu
+```
+
+### GPQA Benchmark Suite
+
+Run all GPQA variants:
+
+```bash
+trtllm-eval --model meta-llama/Llama-3.1-8B-Instruct gpqa-diamond
+trtllm-eval --model meta-llama/Llama-3.1-8B-Instruct gpqa-main
+trtllm-eval --model meta-llama/Llama-3.1-8B-Instruct gpqa-extended
+```
+
+### TensorRT Engine Evaluation
+
+Evaluate a pre-built TensorRT engine:
+
+```bash
+trtllm-eval --model /path/to/engine \
+  --tokenizer meta-llama/Llama-3.1-8B-Instruct \
+  --backend tensorrt \
+  mmlu
+```
+
+## Common Evaluation Tasks
+
+| Task | Description | Dataset |
+|------|-------------|----------|
+| `mmlu` | Multi-task language understanding | 57 subjects, multiple choice |
+| `gsm8k` | Grade school math word problems | 8.5K math problems |
+| `cnn-dailymail` | Text summarization | News article summaries |
+| `gpqa-diamond` | Graduate-level science questions | High-quality subset |
+| `gpqa-main` | Graduate-level science questions | Main dataset |
+| `gpqa-extended` | Graduate-level science questions | Extended dataset |
+| `mmmu` | Multimodal understanding | Multi-discipline, multimodal |
+| `longbench-v1` | Long-context understanding | V1 benchmark |
+| `longbench-v2` | Long-context understanding | V2 benchmark |
+| `json-mode` | JSON generation | Structured output |
+
+## Related Commands
+
+- [trtllm-serve](/cli/trtllm-serve) - Serve models via API
+- [trtllm-bench](/cli/trtllm-bench) - Benchmark model performance
+- [trtllm-build](/cli/trtllm-build) - Build TensorRT engines

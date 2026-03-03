@@ -1,0 +1,185 @@
+---
+title: Introduction to TensorRT-LLM
+description: Learn about TensorRT-LLM, NVIDIA's open-source library for optimizing Large Language Model inference on GPUs
+---
+
+# Introduction to TensorRT-LLM
+
+TensorRT-LLM is an open-source library for optimizing Large Language Model (LLM) inference on NVIDIA GPUs. It provides state-of-the-art optimizations and an easy-to-use Python API to define LLMs and perform inference efficiently.
+
+## What is TensorRT-LLM?
+
+Built on PyTorch, TensorRT-LLM delivers exceptional performance for LLM inference through advanced optimizations including:
+
+- **Custom attention kernels** for accelerated attention mechanisms
+- **In-flight batching** to maximize GPU utilization
+- **Paged KV caching** for efficient memory management
+- **Advanced quantization** (FP8, FP4, INT4 AWQ, INT8 SmoothQuant)
+- **Speculative decoding** for faster token generation
+- **Multi-GPU and multi-node support** with tensor and pipeline parallelism
+
+<CardGroup cols={2}>
+  <Card title="Quantization" icon="compress">
+    Support for FP8, FP4, INT4, and INT8 quantization to reduce memory footprint and increase throughput while maintaining accuracy
+  </Card>
+  <Card title="Speculative Decoding" icon="bolt">
+    Generate multiple tokens per iteration using draft models, N-gram matching, or Medusa/Eagle techniques for up to 3x speedup
+  </Card>
+  <Card title="Paged KV Cache" icon="database">
+    Efficient memory management with paged attention inspired by virtual memory, enabling longer sequences and higher batch sizes
+  </Card>
+  <Card title="In-Flight Batching" icon="layer-group">
+    Dynamic batching that continuously processes new requests as they arrive, maximizing GPU utilization
+  </Card>
+  <Card title="Multi-GPU Support" icon="server">
+    Scale inference across multiple GPUs and nodes with tensor parallelism, pipeline parallelism, and expert parallelism for MoE models
+  </Card>
+  <Card title="OpenAI Compatible" icon="plug">
+    Drop-in replacement for OpenAI API with trtllm-serve, supporting /v1/chat/completions and /v1/completions endpoints
+  </Card>
+</CardGroup>
+
+## Why TensorRT-LLM?
+
+### Performance
+
+TensorRT-LLM delivers industry-leading performance:
+
+- **40,000+ tokens/second** with Llama 4 on NVIDIA B200 GPUs
+- **2-4x throughput improvement** over standard PyTorch implementations
+- **Up to 3.6x speedup** with speculative decoding techniques
+- **Sub-millisecond latency** for first token with optimized configurations
+
+### Flexibility
+
+TensorRT-LLM is designed to be modular and easy to customize:
+
+- **PyTorch-native architecture** allows developers to experiment and extend functionality
+- **High-level LLM API** abstracts complexity while providing fine-grained control
+- **Pre-defined models** with native PyTorch code that can be easily adapted
+- **Multiple backends** including PyTorch, AutoDeploy (beta), and TensorRT
+
+### Production-Ready
+
+- **OpenAI-compatible API** via `trtllm-serve` for seamless integration
+- **Triton Inference Server integration** for enterprise deployments
+- **Docker containers** on NGC for easy deployment
+- **Pre-quantized models** on Hugging Face ready for immediate use
+
+## Key Features
+
+<AccordionGroup>
+  <Accordion title="Advanced Quantization">
+    TensorRT-LLM supports multiple quantization formats:
+    
+    - **FP8**: 8-bit floating point for Hopper GPUs (H100, H200)
+    - **FP4**: 4-bit floating point for Blackwell GPUs (B200)
+    - **INT4 AWQ**: Activation-aware Weight Quantization
+    - **INT8 SmoothQuant**: Smooth activation quantization
+    - **Mixed precision**: Different quantization per layer or component
+    
+    Pre-quantized models are available on [Hugging Face](https://huggingface.co/collections/nvidia/model-optimizer-66aa84f7966b3150262481a4).
+  </Accordion>
+  
+  <Accordion title="Speculative Decoding">
+    Generate tokens faster with various speculative decoding techniques:
+    
+    - **Draft-target**: Use a smaller draft model to predict multiple tokens
+    - **N-gram matching**: Reuse previous generations for common patterns
+    - **Eagle3**: Advanced speculative decoding with confidence scores
+    - **MTP (Medusa Tree Predict)**: Multi-token prediction for thinking models
+    
+    Achieve up to 3x throughput improvement on supported models.
+  </Accordion>
+  
+  <Accordion title="Disaggregated Serving">
+    Separate prefill (context encoding) and decode (token generation) across different GPUs:
+    
+    - **Independent scaling**: Scale prefill and decode separately based on workload
+    - **Resource optimization**: Use different GPU types for different stages
+    - **KV cache transfer**: Exchange KV cache via NCCL, UCX, or MPI
+    
+    Ideal for optimizing cost and latency in production deployments.
+  </Accordion>
+  
+  <Accordion title="Long Context Support">
+    Handle extremely long sequences efficiently:
+    
+    - **Skip Softmax Attention**: Optimize attention for long contexts
+    - **Paged KV cache**: Efficient memory management for long sequences
+    - **Streaming KV cache**: Process sequences longer than GPU memory
+    - **Context chunking**: Automatic chunking for multi-million token contexts
+  </Accordion>
+</AccordionGroup>
+
+## Supported Models
+
+TensorRT-LLM supports a wide range of popular LLM architectures:
+
+- **Llama family**: Llama 3, 3.1, 3.2, 3.3, Llama 4
+- **Qwen family**: Qwen 2, 2.5, Qwen3, QwenVL
+- **DeepSeek**: DeepSeek V2, V3, DeepSeek-R1
+- **Mixtral**: Mixtral 8x7B, 8x22B
+- **Phi**: Phi-3, Phi-4
+- **GPT models**: GPT-2, GPT-J, GPT-NeoX
+- **Multimodal models**: LLaVA, Qwen-VL, Mllama
+- **And many more...**
+
+For the complete list, see the [Supported Models](https://nvidia.github.io/TensorRT-LLM/models/supported-models.html) documentation.
+
+## Architecture
+
+TensorRT-LLM provides three execution backends:
+
+1. **PyTorch Backend** (Default): Native PyTorch execution with TensorRT-LLM optimizations
+2. **AutoDeploy** (Beta): Automatic graph optimization using torch.export
+3. **TensorRT Backend** (Legacy): Pure TensorRT engine-based execution
+
+All backends share optimized C++ components for scheduling, batching, KV cache management, and token sampling.
+
+<Note>
+  The PyTorch backend is the recommended default for most use cases, offering the best balance of performance, flexibility, and ease of use.
+</Note>
+
+## Getting Started
+
+Ready to start using TensorRT-LLM? Here's where to go next:
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Get up and running with TensorRT-LLM in minutes using Docker and simple Python examples
+  </Card>
+  <Card title="Installation" icon="download" href="/installation">
+    Detailed installation instructions for pip, Docker, and building from source
+  </Card>
+  <Card title="Examples" icon="code" href="https://nvidia.github.io/TensorRT-LLM/examples/llm_api_examples.html">
+    Explore comprehensive examples for different use cases and advanced features
+  </Card>
+  <Card title="API Reference" icon="book" href="https://nvidia.github.io/TensorRT-LLM/llm-api/index.html">
+    Complete API documentation for the LLM class and all configuration options
+  </Card>
+</CardGroup>
+
+## Community and Support
+
+- **GitHub**: [NVIDIA/TensorRT-LLM](https://github.com/NVIDIA/TensorRT-LLM)
+- **Documentation**: [nvidia.github.io/TensorRT-LLM](https://nvidia.github.io/TensorRT-LLM/)
+- **NGC Containers**: [NGC Catalog](https://catalog.ngc.nvidia.com/orgs/nvidia/teams/tensorrt-llm/containers/release)
+- **Tech Blogs**: [Latest research and optimizations](https://nvidia.github.io/TensorRT-LLM/blogs/)
+
+## Benchmarks and Performance
+
+TensorRT-LLM consistently delivers state-of-the-art performance:
+
+- **Llama 4 Maverick**: 1,000+ TPS/user on Blackwell B200
+- **DeepSeek-R1**: World-record inference performance on B200 GPUs
+- **Llama 3.3 70B**: 3x throughput with speculative decoding
+- **GPT-OSS-120B**: High-performance serving with day-0 support
+
+<Tip>
+  Check the [performance documentation](https://nvidia.github.io/TensorRT-LLM/developer-guide/perf-overview.html) for detailed benchmarks and optimization guides for your specific use case.
+</Tip>
+
+## License
+
+TensorRT-LLM is licensed under the Apache 2.0 license. The project is fully open-source with development happening on GitHub.

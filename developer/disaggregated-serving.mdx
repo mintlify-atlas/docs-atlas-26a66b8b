@@ -1,0 +1,365 @@
+---
+title: 'Disaggregated Serving'
+description: 'Separate prefill and decode phases for optimized LLM serving'
+---
+
+## Overview
+
+Disaggregated serving separates the context (prefill) and generation (decode) phases of LLM inference onto different GPU pools. This architecture eliminates interference between phases and enables independent optimization of time-to-first-token (TTFT) and token-per-output-token (TPOT) metrics.
+
+## Motivation
+
+LLM inference consists of two distinct phases with different compute characteristics:
+
+- **Context (Prefill)**: Computes KV cache for all prompt tokens in parallel
+- **Generation (Decode)**: Generates tokens one by one using cached values
+
+### Aggregated vs Disaggregated Serving
+
+**Aggregated Serving (Traditional)**
+
+In aggregated serving, both phases share the same GPU resources and parallelism strategy. This leads to:
+
+- Context processing delays token generation, increasing TPOT
+- Reduced interactivity due to interference
+- Single GPU type and parallelism configuration for both phases
+- Optimizing one metric (TTFT) comes at the expense of another (TPOT)
+
+**Disaggregated Serving**
+
+Disaggregated serving resolves these challenges by:
+
+- Running phases on separate GPU pools with different parallelism strategies
+- Removing interference between context and generation
+- Enabling independent optimization of TTFT and TPOT
+- Allowing different GPU types for each phase
+
+While disaggregation incurs overhead for KV cache transfer, the advantages are substantial for workloads with long input sequences and moderate output lengths.
+
+For more details, see the [research paper](https://arxiv.org/pdf/2506.05508).
+
+## Architecture
+
+### KV Cache Exchange
+
+The KV cache exchange module is modularly decoupled from the KV cache manager and underlying communication libraries. It handles:
+
+- Efficient transmission and reception of cache blocks
+- Prompt cache space release
+- Cache layout conversions during exchange
+- RDMA / NVLink communication
+
+<Frame>
+  <img src="https://github.com/NVIDIA/TensorRT-LLM/raw/main/docs/source/blogs/media/tech_blog5_Picture6.png" alt="KV cache exchange architecture" />
+</Frame>
+
+### Multi-Backend Support
+
+TensorRT-LLM supports multiple communication protocols:
+
+<CardGroup cols={3}>
+  <Card title="NIXL" icon="network-wired">
+    Default backend with dynamic scaling support
+  </Card>
+  <Card title="UCX" icon="exchange-alt">
+    Recommended backend with dynamic node joining/leaving
+  </Card>
+  <Card title="MPI" icon="project-diagram">
+    Traditional MPI-based communication
+  </Card>
+</CardGroup>
+
+<Tip>
+  We recommend using UCX and NIXL backends as they support dynamic scaling mechanisms—specifically, dynamic node joining and leaving. This allows adjusting load based on traffic demands or switching roles between context and generation dynamically.
+</Tip>
+
+### NIXL Backend Configuration
+
+NIXL supports multiple underlying communication backends configured via the `TRTLLM_NIXL_KVCACHE_BACKEND` environment variable:
+
+- **UCX** (default)
+- **LIBFABRIC** (available from v0.16.0)
+
+If an unsupported backend is specified, NIXL automatically falls back to UCX.
+
+## Optimizations
+
+### Overlap Optimization
+
+TensorRT-LLM overlaps KV cache transmission with computation for multiple independent requests:
+
+- While one request sends/receives KV cache blocks, other requests proceed with computation
+- If instances use multiple GPUs, KV cache transmission between different GPU sets occurs in parallel
+- Significantly reduces end-to-end latency
+
+<Frame>
+  <img src="https://github.com/NVIDIA/TensorRT-LLM/raw/main/docs/source/blogs/media/tech_blog5_Picture7.png" alt="KV cache exchange timing with overlap" />
+</Frame>
+
+### Cache Layout Transformation
+
+Disaggregated serving supports different parallelism strategies for context and generation phases:
+
+- Direct device-to-device memory transfer minimizes latency
+- Automatic KV cache block mapping between different parallel configurations
+- Example: Context with TP2 → Generation with PP2
+
+<Frame>
+  <img src="https://github.com/NVIDIA/TensorRT-LLM/raw/main/docs/source/blogs/media/tech_blog5_Picture8.png" alt="KV cache layout conversion" />
+</Frame>
+
+### Unique Global Request ID
+
+For end-to-end request tracking, provide a unique global request ID:
+
+```python
+from tensorrt_llm import DisaggregatedParams
+
+# Enable tracking with unique ID
+params = DisaggregatedParams(
+    disagg_request_id=4398046511105  # Use value > 1 << 42
+)
+```
+
+<Note>
+  Use values larger than `1 << 42 = 4398046511104` to avoid collisions with worker-local or warm-up requests. Do not route context and generation requests with the same ID to the same worker.
+</Note>
+
+## Setup and Configuration
+
+### Using trtllm-serve
+
+#### Step 1: Configure Context and Generation Servers
+
+Create configuration files for each server type:
+
+**context_config.yml**
+```yaml
+disable_overlap_scheduler: True  # Not yet supported for disaggregated context
+cache_transceiver_config:
+  backend: UCX  # or NIXL, MPI
+  max_tokens_in_buffer: 2048  # Should be >= max ISL
+```
+
+**gen_config.yml**
+```yaml
+cache_transceiver_config:
+  backend: UCX
+  max_tokens_in_buffer: 2048
+```
+
+<Info>
+  Set `max_tokens_in_buffer` greater than or equal to the maximum Input Sequence Length (ISL) of all requests for optimal performance.
+</Info>
+
+#### Step 2: Launch Context and Generation Servers
+
+```bash
+# Start context servers on different GPUs
+CUDA_VISIBLE_DEVICES=0 trtllm-serve TinyLlama/TinyLlama-1.1B-Chat-v1.0 \
+  --host localhost --port 8001 --backend pytorch \
+  --config ./context_config.yml &> log_ctx_0 &
+
+CUDA_VISIBLE_DEVICES=1 trtllm-serve TinyLlama/TinyLlama-1.1B-Chat-v1.0 \
+  --host localhost --port 8002 --backend pytorch \
+  --config ./context_config.yml &> log_ctx_1 &
+
+# Start generation server
+CUDA_VISIBLE_DEVICES=2 trtllm-serve TinyLlama/TinyLlama-1.1B-Chat-v1.0 \
+  --host localhost --port 8003 --backend pytorch \
+  --config ./gen_config.yml &> log_gen_0 &
+```
+
+#### Step 3: Launch Disaggregated Orchestrator
+
+Create the orchestrator configuration:
+
+**disagg_config.yaml**
+```yaml
+hostname: localhost
+port: 8000
+backend: pytorch
+context_servers:
+  num_instances: 2
+  urls:
+    - "localhost:8001"
+    - "localhost:8002"
+generation_servers:
+  num_instances: 1
+  urls:
+    - "localhost:8003"
+```
+
+Launch the orchestrator:
+
+```bash
+trtllm-serve disaggregated -c disagg_config.yaml
+```
+
+<Frame>
+  <img src="https://github.com/NVIDIA/TensorRT-LLM/raw/main/docs/source/blogs/media/tech_blog5_Picture3.png" alt="trtllm-serve disaggregated architecture" />
+</Frame>
+
+#### Step 4: Send Requests
+
+The disaggregated server provides an OpenAI-compatible endpoint:
+
+```bash
+curl http://localhost:8000/v1/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+    "prompt": "NVIDIA is a great company because",
+    "max_tokens": 16,
+    "temperature": 0
+  }'
+```
+
+The orchestrator:
+1. Routes requests to context servers (marked as "context-only")
+2. Context server returns prompt tokens, first generated token, and `ctx_params` metadata
+3. Orchestrator forwards `ctx_params` to generation servers
+4. Generation server retrieves KV cache blocks and completes generation
+
+### Using Dynamo
+
+For production deployments, [Dynamo](https://github.com/ai-dynamo/dynamo) provides:
+
+- Data center-scale inference server for LLM workloads
+- Decoupled pre- and post-processing workers for high concurrency
+- Smart router for optimal decode worker selection
+- Built-in Kubernetes deployment support
+- Monitoring and metrics collection
+- Dynamic instance scaling (in development)
+
+<Frame>
+  <img src="https://github.com/NVIDIA/TensorRT-LLM/raw/main/docs/source/blogs/media/tech_blog5_Picture4.png" alt="Dynamo integration" />
+</Frame>
+
+See the [Dynamo documentation](https://docs.nvidia.com/dynamo/latest/backends/trtllm/README.html) for integration details.
+
+### SLURM Deployment
+
+For SLURM cluster deployments, see the [disaggregated inference benchmark scripts](https://github.com/NVIDIA/TensorRT-LLM/tree/main/examples/disaggregated/slurm).
+
+### Multiple Orchestrator Instances
+
+To increase maximum concurrency without additional GPU nodes, deploy multiple disaggregated server instances across different nodes, each managing the same context/generation servers:
+
+**Two-node example:**
+
+- **Node A**: Context servers at `node-a:8001`, Generation servers at `node-b:8002`, Orchestrator at `node-a:8000`
+- **Node B**: Same context/generation servers, Orchestrator at `node-b:8000`
+- **Clients**: Send requests to both `node-a:8000` and `node-b:8000` (use load balancer)
+
+This is helpful when one orchestrator becomes a performance bottleneck or runs out of ephemeral ports.
+
+## Environment Variables
+
+### Communication Backend
+
+```bash
+# NIXL backend selection (default: UCX)
+export TRTLLM_NIXL_KVCACHE_BACKEND=UCX  # or LIBFABRIC (v0.16.0+)
+```
+
+### Performance Tuning
+
+```bash
+# Disable overlap optimization (default: 0)
+export TRTLLM_DISABLE_KV_CACHE_TRANSFER_OVERLAP=1
+
+# Parallel KV cache receive within instance (default: 0)
+export TRTLLM_ENABLE_KVCACHE_RECEIVE_PARALLEL=1
+
+# Concurrent processing from different context executors (default: 0)
+export TRTLLM_REQUEST_KV_CACHE_CONCURRENT=1
+
+# Zero-copy transfer for non-contiguous data (default: 0)
+export TRTLLM_TRY_ZCOPY_FOR_KVCACHE_TRANSFER=1
+```
+
+### Memory Management
+
+```bash
+# Buffer size for transfers (default: 512MB)
+export TRTLLM_KVCACHE_TRANSFER_BUFFER_SIZE=1GB
+
+# Use cudaMallocAsync for buffers (default: 0)
+export TRTLLM_KVCACHE_TRANSFER_USE_ASYNC_BUFFER=1
+
+# Maximum concurrent sends (default: 1)
+export TRTLLM_KVCACHE_SEND_MAX_CONCURRENCY_NUM=2
+```
+
+### CUDA and Communication
+
+```bash
+# Reduce CUDA streams (set to 0 if no NCCL ops outside graph)
+export NCCL_GRAPH_MIXING_SUPPORT=0
+
+# Reduce NIC contention for TEP (default: 2)
+export UCX_MAX_RNDV_RAILS=1
+
+# GB200 performance tuning (default: auto)
+export UCX_RNDV_SCHEME=get_zcopy  # or put_zcopy
+```
+
+### UCX Configuration (Different NVLink Domains)
+
+If servers run on different NVLink domains (check with `nvidia-smi -q` → `Fabric.ClusterUUID`):
+
+```bash
+# Disable MNNVL
+export UCX_CUDA_IPC_ENABLE_MNNVL=n
+
+# Allow UCX to use all devices
+unset UCX_NET_DEVICES
+```
+
+## Troubleshooting
+
+### FAQs
+
+<AccordionGroup>
+  <Accordion title="What are the limitations?">
+    - Only decoder-only models supported
+    - Beam width must be 1
+    - KV cache must be homogeneous (same data type and number of attention heads at each layer)
+  </Accordion>
+
+  <Accordion title="Can context and generation use different engines?">
+    Yes. When using the TensorRT backend, context and generation instances can use different engines with different parallelism (TP, PP). TensorRT-LLM handles KV cache heterogeneity automatically.
+  </Accordion>
+
+  <Accordion title="Can one instance handle both context and generation?">
+    Yes, but not recommended. TensorRT-LLM does not implement optimal scheduling for mixed workloads. Run context-only and generation-only requests on separate server sets.
+  </Accordion>
+
+  <Accordion title="Multi-GPU and multi-node support?">
+    Yes. Different instances should use different GPUs (control with `CUDA_VISIBLE_DEVICES`). Context and generation servers can run on the same node or different nodes.
+  </Accordion>
+
+  <Accordion title="Why is LIBFABRIC backend not working?">
+    The TensorRT-LLM container doesn't include the NIXL LIBFABRIC plugin by default. Either:
+    1. Rebuild NIXL with libfabric and hwloc installed
+    2. Set `NIXL_PLUGINS_DIR` to a directory containing a compatible `libplugin_LIBFABRIC.so`
+
+    See the [examples documentation](https://github.com/NVIDIA/TensorRT-LLM/tree/main/examples/disaggregated) for details.
+  </Accordion>
+
+  <Accordion title="Why low bandwidth during first requests?">
+    Communication channels are established dynamically. Connection establishment incurs significant overhead during initial requests. Perform a warm-up phase before benchmarking.
+  </Accordion>
+
+  <Accordion title="Does TensorRT-LLM support GPU Direct RDMA?">
+    Yes, TensorRT-LLM supports GPU Direct RDMA for inter-node KV cache transfer.
+  </Accordion>
+</AccordionGroup>
+
+## Related Pages
+
+- [Performance Benchmarking](/developer/benchmarking)
+- [Parallel Strategies](/features/parallelism)
+- [KV Cache](/features/kv-cache)
+- [trtllm-serve Reference](/api/serve)

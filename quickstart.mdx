@@ -1,80 +1,416 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart Guide
+description: Get started with TensorRT-LLM in minutes - run your first inference using Docker and the LLM API
 ---
 
-## Get started in three steps
+# Quickstart Guide
 
-Get your documentation site running locally and make your first customization.
+This guide will get you up and running with TensorRT-LLM in minutes. You'll learn how to deploy a model for online serving and run offline inference using the Python API.
 
-### Step 1: Set up your local environment
+## Prerequisites
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+Before you begin, ensure you have:
 
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
-
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
-
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
-
-## Next steps
-
-Now that you have your docs running, explore these key features:
-
-<CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
+- **NVIDIA GPU** with compute capability 7.0+ (Volta, Turing, Ampere, Hopper, or Blackwell)
+- **NVIDIA Driver** version 535+ installed
+- **Docker** with NVIDIA Container Toolkit installed
+- **8GB+ GPU memory** (for TinyLlama example; larger models require more)
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+  If you don't have Docker installed, follow the [NVIDIA Container Toolkit installation guide](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html).
 </Note>
+
+## Launch Docker Container
+
+<Steps>
+  <Step title="Pull and run the TensorRT-LLM container">
+    The TensorRT-LLM container comes with all dependencies pre-installed. Start the container with GPU access:
+
+    ```bash
+    docker run --rm -it \
+      --ipc host \
+      --gpus all \
+      --ulimit memlock=-1 \
+      --ulimit stack=67108864 \
+      -p 8000:8000 \
+      nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc6
+    ```
+
+    <Tip>
+      Replace `1.3.0rc6` with the latest version tag from the [NGC catalog](https://catalog.ngc.nvidia.com/orgs/nvidia/teams/tensorrt-llm/containers/release/tags).
+    </Tip>
+
+    The `-p 8000:8000` flag exposes port 8000 for the serving API.
+  </Step>
+
+  <Step title="Verify the installation">
+    Once inside the container, verify TensorRT-LLM is installed:
+
+    ```bash
+    python3 -c "import tensorrt_llm; print(tensorrt_llm.__version__)"
+    ```
+
+    You should see the version number printed (e.g., `1.3.0rc6`).
+  </Step>
+</Steps>
+
+## Option 1: Online Serving with trtllm-serve
+
+The fastest way to deploy a model is using `trtllm-serve`, which provides an OpenAI-compatible API.
+
+<Steps>
+  <Step title="Start the server">
+    Launch a model server using `trtllm-serve`. This example uses TinyLlama for quick testing:
+
+    ```bash
+    trtllm-serve "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+    ```
+
+    The server will:
+    - Download the model from Hugging Face (on first run)
+    - Optimize the model for your GPU
+    - Start an OpenAI-compatible HTTP server on port 8000
+
+    <Info>
+      The first run may take a few minutes to download and optimize the model. Subsequent runs are much faster as the optimized model is cached.
+    </Info>
+  </Step>
+
+  <Step title="Send a test request">
+    Open a new terminal and attach to the running container:
+
+    ```bash
+    docker exec -it <container_id> bash
+    ```
+
+    Or from outside the container (if you exposed port 8000), send a curl request:
+
+    ```bash
+    curl -X POST http://localhost:8000/v1/chat/completions \
+      -H "Content-Type: application/json" \
+      -H "Accept: application/json" \
+      -d '{
+        "model": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+        "messages": [
+          {"role": "system", "content": "You are a helpful assistant."},
+          {"role": "user", "content": "What is the capital of France?"}
+        ],
+        "max_tokens": 100,
+        "temperature": 0.7
+      }'
+    ```
+
+    **Example Response:**
+
+    ```json
+    {
+      "id": "chatcmpl-ef648e7489c040679d87ed12db5d3214",
+      "object": "chat.completion",
+      "created": 1741966075,
+      "model": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+      "choices": [
+        {
+          "index": 0,
+          "message": {
+            "role": "assistant",
+            "content": "The capital of France is Paris. It is known for its iconic landmarks such as the Eiffel Tower, Louvre Museum, and Notre-Dame Cathedral.",
+            "tool_calls": []
+          },
+          "logprobs": null,
+          "finish_reason": "stop",
+          "stop_reason": null
+        }
+      ],
+      "usage": {
+        "prompt_tokens": 28,
+        "total_tokens": 58,
+        "completion_tokens": 30
+      }
+    }
+    ```
+  </Step>
+
+  <Step title="Try a quantized model (optional)">
+    For better performance, use a pre-quantized FP8 model:
+
+    ```bash
+    trtllm-serve "nvidia/Qwen3-8B-FP8"
+    ```
+
+    <Warning>
+      FP8 quantization requires Hopper GPUs (H100, H200) or newer. For other GPUs, use standard models or INT4/INT8 quantization.
+    </Warning>
+
+    Browse more pre-optimized models in the [NVIDIA Model Optimizer collection](https://huggingface.co/collections/nvidia/inference-optimized-checkpoints-with-model-optimizer).
+  </Step>
+</Steps>
+
+### Streaming Responses
+
+To enable streaming (useful for chat applications), add `"stream": true` to your request:
+
+```bash
+curl -X POST http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+    "messages": [{"role": "user", "content": "Tell me a story"}],
+    "max_tokens": 200,
+    "stream": true
+  }'
+```
+
+You'll receive Server-Sent Events (SSE) with tokens as they're generated.
+
+## Option 2: Offline Inference with LLM API
+
+For batch processing or integration into Python applications, use the LLM API directly.
+
+<Steps>
+  <Step title="Create a Python script">
+    Create a file called `quickstart.py` with the following code:
+
+    ```python quickstart.py
+    from tensorrt_llm import LLM, SamplingParams
+
+    # Initialize the LLM with a HuggingFace model
+    llm = LLM(model="TinyLlama/TinyLlama-1.1B-Chat-v1.0")
+
+    # Sample prompts
+    prompts = [
+        "Hello, my name is",
+        "The capital of France is",
+        "The future of AI is",
+    ]
+
+    # Configure sampling parameters
+    sampling_params = SamplingParams(temperature=0.8, top_p=0.95)
+
+    # Generate responses
+    for output in llm.generate(prompts, sampling_params):
+        print(f"Prompt: {output.prompt!r}")
+        print(f"Generated: {output.outputs[0].text!r}")
+        print("-" * 80)
+    ```
+
+    This code:
+    - Loads TinyLlama from Hugging Face
+    - Defines three sample prompts
+    - Generates completions with temperature sampling
+    - Prints the results
+  </Step>
+
+  <Step title="Run the script">
+    Execute the script inside the Docker container:
+
+    ```bash
+    python3 quickstart.py
+    ```
+
+    **Example Output:**
+
+    ```text
+    Prompt: 'Hello, my name is'
+    Generated: ' John and I am a software engineer. I have been working on...'
+    --------------------------------------------------------------------------------
+    Prompt: 'The capital of France is'
+    Generated: 'Paris.'
+    --------------------------------------------------------------------------------
+    Prompt: 'The future of AI is'
+    Generated: 'an exciting time for us. We are constantly researching and developing...'
+    --------------------------------------------------------------------------------
+    ```
+  </Step>
+
+  <Step title="Try async generation (optional)">
+    For concurrent request processing, use the async API:
+
+    ```python async_example.py
+    import asyncio
+    from tensorrt_llm import LLM, SamplingParams
+
+    async def main():
+        llm = LLM(model="TinyLlama/TinyLlama-1.1B-Chat-v1.0")
+        
+        prompts = [
+            "What is machine learning?",
+            "Explain quantum computing",
+            "What is the theory of relativity?",
+        ]
+        
+        sampling_params = SamplingParams(temperature=0.8, top_p=0.95, max_tokens=100)
+        
+        # Generate all prompts concurrently
+        async def generate_one(prompt):
+            output = await llm.generate_async(prompt, sampling_params)
+            return output.outputs[0].text
+        
+        results = await asyncio.gather(*[generate_one(p) for p in prompts])
+        
+        for prompt, result in zip(prompts, results):
+            print(f"Q: {prompt}")
+            print(f"A: {result}\n")
+
+    if __name__ == "__main__":
+        asyncio.run(main())
+    ```
+  </Step>
+</Steps>
+
+## Loading Quantized Models
+
+Load pre-quantized models directly from Hugging Face for optimal performance:
+
+<CodeGroup>
+
+```python FP8 (Hopper GPUs)
+from tensorrt_llm import LLM
+
+# Load FP8-quantized Qwen model
+llm = LLM(model="nvidia/Qwen3-8B-FP8")
+
+response = llm.generate(
+    "Explain quantum entanglement",
+    max_tokens=150
+)
+print(response[0].outputs[0].text)
+```
+
+```python FP4 (Blackwell GPUs)
+from tensorrt_llm import LLM
+
+# Load FP4-quantized DeepSeek model
+llm = LLM(model="nvidia/DeepSeek-R1-FP4")
+
+response = llm.generate(
+    "What is the meaning of life?",
+    max_tokens=200
+)
+print(response[0].outputs[0].text)
+```
+
+```python Standard HuggingFace Model
+from tensorrt_llm import LLM
+
+# Load any HuggingFace model
+llm = LLM(model="meta-llama/Llama-3.1-8B-Instruct")
+
+response = llm.generate(
+    "Write a haiku about programming",
+    max_tokens=50
+)
+print(response[0].outputs[0].text)
+```
+
+</CodeGroup>
+
+<Note>
+  Quantized models require significantly less GPU memory and can achieve 2-4x higher throughput with minimal accuracy loss.
+</Note>
+
+## Customizing Generation
+
+The `SamplingParams` class provides fine-grained control over text generation:
+
+```python
+from tensorrt_llm import SamplingParams
+
+# Conservative sampling for factual responses
+factual_params = SamplingParams(
+    temperature=0.1,
+    top_p=0.9,
+    max_tokens=100
+)
+
+# Creative sampling for storytelling
+creative_params = SamplingParams(
+    temperature=1.0,
+    top_p=0.95,
+    top_k=50,
+    max_tokens=500
+)
+
+# Greedy decoding (deterministic)
+greedy_params = SamplingParams(
+    temperature=0.0,
+    max_tokens=100
+)
+
+# With repetition penalty
+no_repeat_params = SamplingParams(
+    temperature=0.8,
+    repetition_penalty=1.2,
+    max_tokens=200
+)
+```
+
+## Next Steps
+
+Congratulations! You've successfully run your first TensorRT-LLM inference. Here's what to explore next:
+
+<CardGroup cols={2}>
+  <Card title="Installation Options" icon="download" href="/installation">
+    Learn about pip installation, building from source, and system requirements
+  </Card>
+  <Card title="Advanced Examples" icon="code" href="https://nvidia.github.io/TensorRT-LLM/examples/llm_api_examples.html">
+    Explore speculative decoding, multi-GPU inference, LoRA adapters, and more
+  </Card>
+  <Card title="Model Support" icon="list" href="https://nvidia.github.io/TensorRT-LLM/models/supported-models.html">
+    Check which models are supported and how to add custom models
+  </Card>
+  <Card title="Performance Tuning" icon="gauge" href="https://nvidia.github.io/TensorRT-LLM/performance/performance-tuning-guide/benchmarking-default-performance.html">
+    Learn how to benchmark and optimize performance for your workload
+  </Card>
+</CardGroup>
+
+## Common Issues
+
+<AccordionGroup>
+  <Accordion title="Out of memory errors">
+    If you encounter CUDA out of memory errors:
+    
+    1. Use a smaller model (e.g., TinyLlama instead of Llama-70B)
+    2. Reduce batch size with `max_batch_size` parameter
+    3. Use quantized models (FP8, INT4) to reduce memory footprint
+    4. Enable KV cache offloading for long sequences
+    
+    ```python
+    from tensorrt_llm import LLM, KvCacheConfig
+    
+    llm = LLM(
+        model="TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+        kv_cache_config=KvCacheConfig(free_gpu_memory_fraction=0.5)
+    )
+    ```
+  </Accordion>
+  
+  <Accordion title="Model download fails">
+    If model download from Hugging Face fails:
+    
+    1. Check your internet connection
+    2. Set HuggingFace token if the model requires authentication:
+       ```bash
+       export HF_TOKEN="your_token_here"
+       ```
+    3. Download the model manually and pass the local path:
+       ```python
+       llm = LLM(model="/path/to/local/model")
+       ```
+  </Accordion>
+  
+  <Accordion title="Server connection refused">
+    If you can't connect to the trtllm-serve server:
+    
+    1. Ensure port 8000 is exposed with `-p 8000:8000` in docker run
+    2. Check the server started successfully (no errors in logs)
+    3. Try connecting from inside the container first:
+       ```bash
+       curl http://localhost:8000/health
+       ```
+    4. Check firewall settings if connecting from another machine
+  </Accordion>
+</AccordionGroup>
+
+<Tip>
+  For more troubleshooting help, check the [FAQ](https://nvidia.github.io/TensorRT-LLM/faq.html) or open an issue on [GitHub](https://github.com/NVIDIA/TensorRT-LLM/issues).
+</Tip>

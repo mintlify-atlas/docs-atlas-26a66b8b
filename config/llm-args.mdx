@@ -1,0 +1,807 @@
+---
+title: 'LLM Arguments Configuration'
+description: 'Complete reference for LlmArgs configuration options in TensorRT-LLM'
+---
+
+# LLM Arguments Configuration
+
+This page documents all configuration options available through `LlmArgs` (PyTorch backend) and `TrtLlmArgs` (TensorRT backend) classes.
+
+## Overview
+
+`LlmArgs` is the main configuration class for TensorRT-LLM. It controls model loading, parallelism, quantization, KV caching, speculative decoding, and runtime behavior.
+
+```python
+from tensorrt_llm import LLM
+from tensorrt_llm.llmapi import LlmArgs, KvCacheConfig
+
+args = LlmArgs(
+    model="meta-llama/Llama-2-7b-hf",
+    tensor_parallel_size=2,
+    dtype="bfloat16",
+    kv_cache_config=KvCacheConfig(
+        free_gpu_memory_fraction=0.85
+    )
+)
+
+llm = LLM(args)
+```
+
+## Base Arguments
+
+These arguments are common to both PyTorch and TensorRT backends.
+
+### Model and Tokenizer
+
+<ParamField path="model" type="Union[str, Path]" required>
+The path to the model checkpoint or the model name from the Hugging Face Hub.
+
+**Examples:**
+- `"meta-llama/Llama-2-7b-hf"` (HuggingFace Hub)
+- `"/path/to/local/model"` (Local directory)
+</ParamField>
+
+<ParamField path="tokenizer" type="Optional[Union[str, Path, TokenizerBase, PreTrainedTokenizerBase]]">
+The path to the tokenizer checkpoint or the tokenizer name from the Hugging Face Hub. If not specified, uses the model path.
+</ParamField>
+
+<ParamField path="tokenizer_mode" type="Literal['auto', 'slow']" default="auto">
+The mode to initialize the tokenizer.
+- `auto`: Use fast tokenizer if available
+- `slow`: Force slow tokenizer
+</ParamField>
+
+<ParamField path="custom_tokenizer" type="Optional[str]" status="prototype">
+Specify a custom tokenizer implementation. Accepts either:
+- A built-in alias (e.g., `'deepseek_v32'`)
+- A Python import path (e.g., `'tensorrt_llm.tokenizer.deepseek_v32.DeepseekV32Tokenizer'`)
+
+The tokenizer class must implement `from_pretrained(path, **kwargs)` and the TokenizerBase interface.
+</ParamField>
+
+<ParamField path="skip_tokenizer_init" type="bool" default={false}>
+Whether to skip the tokenizer initialization.
+</ParamField>
+
+<ParamField path="trust_remote_code" type="bool" default={false}>
+Whether to trust remote code when loading models from Hugging Face Hub.
+</ParamField>
+
+<ParamField path="dtype" type="str" default="auto">
+The data type to use for the model.
+
+**Supported values:**
+- `"auto"`: Automatically select based on GPU capability
+- `"float16"`: FP16
+- `"bfloat16"`: BF16
+- `"float32"`: FP32
+</ParamField>
+
+<ParamField path="revision" type="Optional[str]">
+The revision to use for the model when loading from Hugging Face Hub.
+</ParamField>
+
+<ParamField path="tokenizer_revision" type="Optional[str]">
+The revision to use for the tokenizer when loading from Hugging Face Hub.
+</ParamField>
+
+<ParamField path="model_kwargs" type="Optional[Dict[str, Any]]" status="prototype">
+Optional parameters overriding model config defaults.
+
+**Precedence:** (1) model_kwargs, (2) model config file, (3) model config class defaults.
+Unknown keys are ignored.
+</ParamField>
+
+### Parallelism Configuration
+
+<ParamField path="tensor_parallel_size" type="int" default={1}>
+The tensor parallel size. Splits model layers across GPUs.
+
+**Example:** For a 70B model on 4 GPUs: `tensor_parallel_size=4`
+</ParamField>
+
+<ParamField path="pipeline_parallel_size" type="int" default={1}>
+The pipeline parallel size. Splits model layers into stages.
+
+**Example:** For a 70B model on 8 GPUs with TP=2, PP=4: `tensor_parallel_size=2, pipeline_parallel_size=4`
+</ParamField>
+
+<ParamField path="context_parallel_size" type="int" default={1}>
+The context parallel size. Splits attention computation across GPUs for long sequences.
+</ParamField>
+
+<ParamField path="gpus_per_node" type="Optional[int]" default="auto" status="beta">
+The number of GPUs per node. Defaults to `torch.cuda.device_count()`.
+</ParamField>
+
+<ParamField path="moe_cluster_parallel_size" type="Optional[int]" status="beta">
+The cluster parallel size for MoE models's expert weights.
+</ParamField>
+
+<ParamField path="moe_tensor_parallel_size" type="Optional[int]">
+The tensor parallel size for MoE models's expert weights.
+</ParamField>
+
+<ParamField path="moe_expert_parallel_size" type="Optional[int]">
+The expert parallel size for MoE models's expert weights.
+</ParamField>
+
+<ParamField path="enable_attention_dp" type="bool" default={false} status="beta">
+Enable attention data parallel.
+</ParamField>
+
+<ParamField path="enable_lm_head_tp_in_adp" type="bool" default={false} status="prototype">
+Enable LM head TP in attention dp.
+</ParamField>
+
+<ParamField path="pp_partition" type="Optional[List[int]]" status="prototype">
+Pipeline parallel partition, a list of each rank's layer number.
+</ParamField>
+
+<ParamField path="cp_config" type="Optional[CpConfig]" status="prototype">
+Context parallel config.
+
+**CpConfig fields:**
+- `cp_type`: Context parallel type (default: `ULYSSES`)
+- `tokens_per_block`: Number of tokens per block (used in HELIX)
+- `use_nccl_for_alltoall`: Whether to use NCCL for alltoall (default: `True`)
+- `fifo_version`: FIFO version for alltoall (default: `2`)
+- `cp_anchor_size`: Anchor size for STAR attention
+- `block_size`: Block size for STAR attention
+</ParamField>
+
+### Runtime Limits
+
+<ParamField path="max_batch_size" type="Optional[int]" default={2048}>
+The maximum batch size for inference.
+</ParamField>
+
+<ParamField path="max_input_len" type="Optional[int]" default={1024}>
+The maximum input length (in tokens).
+</ParamField>
+
+<ParamField path="max_seq_len" type="Optional[int]">
+The maximum sequence length (input + output). If not specified, computed from other constraints.
+</ParamField>
+
+<ParamField path="max_beam_width" type="Optional[int]" default={1}>
+The maximum beam width for beam search.
+</ParamField>
+
+<ParamField path="max_num_tokens" type="Optional[int]" default={8192}>
+The maximum number of tokens to process in a single batch.
+</ParamField>
+
+### KV Cache Configuration
+
+<ParamField path="kv_cache_config" type="KvCacheConfig">
+KV cache configuration. See [KV Cache Configuration](#kv-cache-configuration-1) section below.
+</ParamField>
+
+<ParamField path="enable_chunked_prefill" type="bool" default={false}>
+Enable chunked prefill. Splits long prompts into chunks for better GPU utilization.
+</ParamField>
+
+### LoRA Configuration
+
+<ParamField path="enable_lora" type="bool" default={false}>
+Enable LoRA (Low-Rank Adaptation) support.
+</ParamField>
+
+<ParamField path="lora_config" type="Optional[LoraConfig]">
+LoRA configuration for the model.
+
+**LoraConfig fields:**
+- `max_lora_rank`: Maximum LoRA rank
+- `lora_dir`: Directory containing LoRA weights
+- `lora_target_modules`: Target modules for LoRA
+</ParamField>
+
+### Speculative Decoding
+
+<ParamField path="speculative_config" type="Optional[SpeculativeConfig]">
+Speculative decoding configuration. Supports multiple speculation algorithms:
+
+**Supported types:**
+- `DraftTargetDecodingConfig`: Draft-target speculation with separate draft model
+- `EagleDecodingConfig` / `Eagle3DecodingConfig`: EAGLE speculation
+- `MedusaDecodingConfig`: Medusa speculation
+- `LookaheadDecodingConfig`: Lookahead speculation
+- `MTPDecodingConfig`: MTP (Multi-Token Prediction) speculation
+- `NGramDecodingConfig`: N-gram based speculation
+- `SADecodingConfig`: Suffix Automaton speculation
+- `PARDDecodingConfig`: PARD (Parallel Draft) speculation
+- `AutoDecodingConfig`: Automatically select speculation algorithm
+
+See [Speculative Decoding](/features/speculative-decoding) for details.
+</ParamField>
+
+### Scheduler Configuration
+
+<ParamField path="scheduler_config" type="SchedulerConfig" status="prototype">
+Scheduler configuration.
+
+**SchedulerConfig fields:**
+- `capacity_scheduler_policy`: The capacity scheduler policy (`MAX_UTILIZATION`, `GUARANTEED_NO_EVICT`, `STATIC_BATCH`)
+- `context_chunking_policy`: Context chunking policy (`FIRST_COME_FIRST_SERVED`, `EQUAL_PROGRESS`)
+- `dynamic_batch_config`: Dynamic batch configuration (TensorRT backend only)
+- `waiting_queue_policy`: Waiting queue scheduling policy (default: `FCFS`)
+</ParamField>
+
+### Advanced Configuration
+
+<ParamField path="peft_cache_config" type="Optional[PeftCacheConfig]" status="prototype">
+PEFT (Parameter-Efficient Fine-Tuning) cache configuration for LoRA adapters.
+
+**PeftCacheConfig fields:**
+- `num_host_module_layer`: Number of LoRA weights sets in host cache
+- `num_device_module_layer`: Number of LoRA weights sets in device cache
+- `optimal_adapter_size`: Optimal adapter size for page width (default: `8`)
+- `max_adapter_size`: Max supported adapter size (default: `64`)
+- `device_cache_percent`: GPU memory fraction for device cache (default: `0.02`)
+- `host_cache_size`: Host cache size in bytes (default: `1GB`)
+</ParamField>
+
+<ParamField path="cache_transceiver_config" type="Optional[CacheTransceiverConfig]" status="prototype">
+Cache transceiver configuration for disaggregated serving.
+
+**CacheTransceiverConfig fields:**
+- `backend`: Communication backend (`DEFAULT`, `UCX`, `NIXL`, `MOONCAKE`, `MPI`)
+- `transceiver_runtime`: Runtime implementation (`CPP`, `PYTHON`)
+- `max_tokens_in_buffer`: Max tokens in transfer buffer
+- `kv_transfer_timeout_ms`: Timeout for KV cache transfer
+</ParamField>
+
+<ParamField path="sparse_attention_config" type="Optional[SparseAttentionConfig]" status="prototype">
+Sparse attention configuration.
+
+**Supported types:**
+- `RocketSparseAttentionConfig`: RocketKV sparse attention
+- `DeepSeekSparseAttentionConfig`: DeepSeek sparse attention
+- `SkipSoftmaxAttentionConfig`: Skip softmax attention
+</ParamField>
+
+<ParamField path="guided_decoding_backend" type="Optional[Literal['xgrammar', 'llguidance']]">
+Guided decoding backend. `llguidance` is supported in PyTorch backend only.
+</ParamField>
+
+<ParamField path="batched_logits_processor" type="Optional[BatchedLogitsProcessor]">
+Batched logits processor for custom token generation control.
+</ParamField>
+
+<ParamField path="gather_generation_logits" type="bool" default={false} status="prototype">
+Gather generation logits.
+</ParamField>
+
+### Orchestration
+
+<ParamField path="orchestrator_type" type="Optional[Literal['rpc', 'ray']]" status="prototype">
+The orchestrator type to use. Defaults to `None`, which uses MPI.
+</ParamField>
+
+<ParamField path="env_overrides" type="Optional[Dict[str, str]]" status="prototype">
+Environment variable overrides.
+
+**Note:** Import-time-cached env vars in the code won't update unless the code fetches them from `os.environ` on demand.
+</ParamField>
+
+### Performance and Monitoring
+
+<ParamField path="iter_stats_max_iterations" type="Optional[int]" status="prototype">
+The maximum number of iterations for iter stats.
+</ParamField>
+
+<ParamField path="request_stats_max_iterations" type="Optional[int]" status="prototype">
+The maximum number of iterations for request stats.
+</ParamField>
+
+<ParamField path="return_perf_metrics" type="bool" default={false} status="prototype">
+Return performance metrics.
+</ParamField>
+
+<ParamField path="perf_metrics_max_requests" type="int" default={0} status="prototype">
+The maximum number of requests for perf metrics. Must also set `return_perf_metrics` to true.
+</ParamField>
+
+<ParamField path="otlp_traces_endpoint" type="Optional[str]" status="prototype">
+Target URL to which OpenTelemetry traces will be sent.
+</ParamField>
+
+### Postprocessing
+
+<ParamField path="num_postprocess_workers" type="int" default={0} status="prototype">
+The number of processes used for postprocessing the generated tokens, including detokenization.
+</ParamField>
+
+<ParamField path="postprocess_tokenizer_dir" type="Optional[str]" status="prototype">
+The path to the tokenizer directory for postprocessing.
+</ParamField>
+
+<ParamField path="reasoning_parser" type="Optional[str]" status="prototype">
+The parser to separate reasoning content from output.
+</ParamField>
+
+---
+
+## PyTorch Backend Arguments (TorchLlmArgs)
+
+These arguments are specific to the PyTorch backend (`backend="pytorch"`).
+
+### CUDA Graph Configuration
+
+<ParamField path="cuda_graph_config" type="Optional[CudaGraphConfig]" status="beta">
+CUDA graph configuration for performance optimization.
+
+**CudaGraphConfig fields:**
+- `batch_sizes`: List of batch sizes to create CUDA graphs for
+- `max_batch_size`: Maximum batch size for CUDA graphs (default: `0`)
+- `enable_padding`: Round batches up to nearest cuda_graph_batch_size (default: `false`)
+
+**Example:**
+```python
+CudaGraphConfig(
+    max_batch_size=128,
+    enable_padding=True
+)
+```
+</ParamField>
+
+### MoE Configuration
+
+<ParamField path="moe_config" type="MoeConfig" status="beta">
+Mixture of Experts configuration.
+
+**MoeConfig fields:**
+- `backend`: MoE backend (`AUTO`, `CUTLASS`, `CUTEDSL`, `WIDEEP`, `TRTLLM`, `DEEPGEMM`, `VANILLA`, `TRITON`)
+- `max_num_tokens`: Max tokens sent to MoE at once
+- `load_balancer`: MoE load balancing configuration
+- `disable_finalize_fusion`: Disable FC2+finalize fusion (default: `false`)
+- `use_low_precision_moe_combine`: Use low precision combine for NVFP4 (default: `false`)
+</ParamField>
+
+### Quantization Configuration
+
+<ParamField path="nvfp4_gemm_config" type="Nvfp4GemmConfig" status="beta">
+NVFP4 GEMM backend configuration.
+
+**Nvfp4GemmConfig fields:**
+- `allowed_backends`: List of backends for auto-selection (default: `['cutlass', 'cublaslt', 'cuda_core']`)
+</ParamField>
+
+### Attention Configuration
+
+<ParamField path="attn_backend" type="str" default="TRTLLM" status="beta">
+Attention backend to use.
+
+**Supported values:**
+- `"TRTLLM"`: TensorRT-LLM attention kernels
+- Other backend-specific options
+</ParamField>
+
+<ParamField path="attention_dp_config" type="Optional[AttentionDpConfig]" status="beta">
+Optimized load-balancing for the DP Attention scheduler.
+
+**AttentionDpConfig fields:**
+- `enable_balance`: Whether to enable balance (default: `false`)
+- `timeout_iters`: Number of iterations to timeout (default: `50`)
+- `batching_wait_iters`: Number of iterations to wait for batching (default: `10`)
+</ParamField>
+
+<ParamField path="disable_overlap_scheduler" type="bool" default={false} status="beta">
+Disable the overlap scheduler.
+</ParamField>
+
+### Sampling Configuration
+
+<ParamField path="sampler_type" type="Union[str, SamplerType]" default="auto" status="beta">
+The type of sampler to use.
+
+**Options:**
+- `"TRTLLMSampler"`: TensorRT-LLM sampler
+- `"TorchSampler"`: PyTorch native sampler
+- `"auto"`: Automatically select (uses TorchSampler unless BeamSearch is requested)
+</ParamField>
+
+<ParamField path="sampler_force_async_worker" type="bool" default={false} status="prototype">
+Force usage of the async worker in the sampler for D2H copies.
+</ParamField>
+
+### Performance Tuning
+
+<ParamField path="garbage_collection_gen0_threshold" type="int" default={20000} status="beta">
+Threshold for Python garbage collection of generation 0 objects. Lower values trigger more frequent GC.
+</ParamField>
+
+<ParamField path="batch_wait_timeout_ms" type="float" default={0} status="prototype">
+If greater than 0, the request queue might wait up to this many milliseconds to receive `max_batch_size` requests.
+</ParamField>
+
+<ParamField path="batch_wait_timeout_iters" type="int" default={0} status="prototype">
+Maximum number of iterations the scheduler will wait to accumulate new requests.
+</ParamField>
+
+<ParamField path="batch_wait_max_tokens_ratio" type="float" default={0} status="prototype">
+Token accumulation threshold ratio (0 to 1) for batch scheduling optimization.
+</ParamField>
+
+<ParamField path="enable_autotuner" type="bool" default={true} status="prototype">
+Enable autotuner for all tunable ops. Performance may degrade if set to false.
+</ParamField>
+
+<ParamField path="allreduce_strategy" type="Optional[str]" default="AUTO" status="beta">
+Allreduce strategy to use.
+
+**Options:** `AUTO`, `NCCL`, `UB`, `MINLATENCY`, `ONESHOT`, `TWOSHOT`, `LOWPRECISION`, `MNNVL`, `NCCL_SYMMETRIC`
+</ParamField>
+
+### Torch Compile
+
+<ParamField path="torch_compile_config" type="Optional[TorchCompileConfig]" status="prototype">
+Torch compile configuration.
+
+**TorchCompileConfig fields:**
+- `enable_fullgraph`: Enable full graph compilation (default: `true`)
+- `enable_inductor`: Enable inductor backend (default: `false`)
+- `enable_piecewise_cuda_graph`: Enable piecewise CUDA graph (default: `false`)
+- `capture_num_tokens`: List of num of tokens to capture CUDA graph for
+- `enable_userbuffers`: Enable userbuffers (default: `true`)
+- `max_num_streams`: Max CUDA streams (default: `1`)
+</ParamField>
+
+### Model Loading
+
+<ParamField path="load_format" type="Union[str, LoadFormat]" default="AUTO">
+How to load the model weights.
+
+**Options:**
+- `"AUTO"`: Detect weight type from model checkpoint
+- `"DUMMY"`: Initialize all weights randomly
+- `"VISION_ONLY"`: Only load multimodal encoder weights
+</ParamField>
+
+<ParamField path="checkpoint_format" type="Optional[str]" status="prototype">
+The format of the provided checkpoint. Can be a custom format registered with `register_checkpoint_loader`.
+</ParamField>
+
+<ParamField path="checkpoint_loader" type="Optional[BaseCheckpointLoader]" status="prototype">
+Custom checkpoint loader instance. If both `checkpoint_format` and `checkpoint_loader` are provided, `checkpoint_loader` is ignored.
+</ParamField>
+
+### Advanced PyTorch Features
+
+<ParamField path="stream_interval" type="int" default={1}>
+The iteration interval to create responses under streaming mode. Set higher for large batches.
+</ParamField>
+
+<ParamField path="enable_iter_perf_stats" type="bool" default={false} status="prototype">
+Enable iteration performance statistics.
+</ParamField>
+
+<ParamField path="enable_iter_req_stats" type="bool" default={false} status="prototype">
+Enable per-request stats per iteration. Must also set `enable_iter_perf_stats` to true.
+</ParamField>
+
+<ParamField path="print_iter_log" type="bool" default={false} status="beta">
+Print iteration logs.
+</ParamField>
+
+<ParamField path="enable_layerwise_nvtx_marker" type="bool" default={false} status="beta">
+Enable layerwise NVTX markers for profiling.
+</ParamField>
+
+<ParamField path="enable_min_latency" type="bool" default={false} status="beta">
+Enable min-latency mode. Currently only used for Llama4.
+</ParamField>
+
+<ParamField path="force_dynamic_quantization" type="bool" default={false} status="prototype">
+Force dynamic quantization.
+</ParamField>
+
+<ParamField path="kv_connector_config" type="Optional[KvCacheConnectorConfig]" status="prototype">
+The config for KV cache connector.
+
+**KvCacheConnectorConfig fields:**
+- `connector_module`: Import path to connector module
+- `connector_scheduler_class`: Scheduler class name
+- `connector_worker_class`: Worker class name
+</ParamField>
+
+<ParamField path="mm_encoder_only" type="bool" default={false} status="prototype">
+Only load/execute the vision encoder part of the model.
+</ParamField>
+
+<ParamField path="ray_worker_extension_cls" type="Optional[str]" status="prototype">
+Full worker extension class name for extending RayGPUWorker functionality.
+</ParamField>
+
+<ParamField path="ray_placement_config" type="Optional[RayPlacementConfig]" status="prototype">
+Placement config for RayGPUWorker. Only used with AsyncLLM and `orchestrator_type='ray'`.
+</ParamField>
+
+<ParamField path="enable_sleep" type="bool" default={false} status="prototype">
+Enable LLM sleep feature. Requires extra setup that may slow down model loading.
+</ParamField>
+
+<ParamField path="max_stats_len" type="int" default={1000} status="prototype">
+The max number of performance statistic entries.
+</ParamField>
+
+<ParamField path="layer_wise_benchmarks_config" type="LayerwiseBenchmarksConfig" status="prototype">
+Configuration for layer-wise benchmarks calibration.
+
+**LayerwiseBenchmarksConfig fields:**
+- `calibration_mode`: `NONE`, `MARK`, or `COLLECT`
+- `calibration_file_path`: File path for calibration data
+- `calibration_layer_indices`: Layer indices to filter
+</ParamField>
+
+---
+
+## TensorRT Backend Arguments (TrtLlmArgs)
+
+These arguments are specific to the TensorRT backend.
+
+### Build Configuration
+
+<ParamField path="workspace" type="Optional[str]">
+The workspace directory for the model.
+</ParamField>
+
+<ParamField path="enable_tqdm" type="bool" default={false}>
+Enable tqdm for progress bar during engine build.
+</ParamField>
+
+<ParamField path="fast_build" type="bool" default={false}>
+Enable fast build mode.
+</ParamField>
+
+<ParamField path="build_config" type="Optional[BuildConfig]">
+Build configuration for TensorRT engine.
+
+**BuildConfig fields:** See [Build Configuration](/config/build-config) for details.
+</ParamField>
+
+<ParamField path="enable_build_cache" type="Union[BuildCacheConfig, bool]" default={false}>
+Enable build cache to reuse compiled engine components.
+</ParamField>
+
+### Quantization
+
+<ParamField path="quant_config" type="QuantConfig">
+Quantization configuration.
+
+**QuantConfig fields:**
+- `quant_algo`: Quantization algorithm (`W8A16`, `W4A16`, `FP8`, `NVFP4`, `W4A16_AWQ`, etc.)
+- `kv_cache_quant_algo`: KV cache quantization algorithm
+- `group_size`: Group size for group-wise quantization (default: `128`)
+- `smoothquant_val`: Smoothing parameter alpha (default: `0.5`)
+- `clamp_val`: Clamp values for FP8 rowwise quantization
+- `has_zero_point`: Whether to use zero point
+- `exclude_modules`: Module name patterns to skip in quantization
+
+See [Quantization](/features/quantization) for details.
+</ParamField>
+
+<ParamField path="calib_config" type="CalibConfig">
+Calibration configuration for quantization.
+
+**CalibConfig fields:**
+- `device`: Device for calibration (`cuda` or `cpu`)
+- `calib_dataset`: Calibration dataset name or path (default: `cnn_dailymail`)
+- `calib_batches`: Number of calibration batches (default: `512`)
+- `calib_batch_size`: Calibration batch size (default: `1`)
+- `calib_max_seq_length`: Max sequence length for calibration (default: `512`)
+- `random_seed`: Random seed (default: `1234`)
+</ParamField>
+
+### Embedding Configuration
+
+<ParamField path="embedding_parallel_mode" type="str" default="SHARDING_ALONG_VOCAB">
+The embedding parallel mode.
+
+**Options:**
+- `NONE`: No parallelism
+- `SHARDING_ALONG_VOCAB`: Shard along vocabulary dimension
+- `SHARDING_ALONG_HIDDEN`: Shard along hidden dimension
+</ParamField>
+
+### Prompt Adapter
+
+<ParamField path="enable_prompt_adapter" type="bool" default={false}>
+Enable prompt adapter support.
+</ParamField>
+
+<ParamField path="max_prompt_adapter_token" type="int" default={0}>
+The maximum number of prompt adapter tokens.
+</ParamField>
+
+### Runtime Configuration
+
+<ParamField path="batching_type" type="Optional[BatchingType]">
+Batching type.
+
+**Options:**
+- `STATIC`: Static batching
+- `INFLIGHT`: In-flight batching (continuous batching)
+</ParamField>
+
+<ParamField path="normalize_log_probs" type="bool" default={false}>
+Normalize log probabilities.
+</ParamField>
+
+<ParamField path="extended_runtime_perf_knob_config" type="Optional[ExtendedRuntimePerfKnobConfig]">
+Extended runtime performance knob configuration.
+
+**ExtendedRuntimePerfKnobConfig fields:**
+- `multi_block_mode`: Whether to use multi-block mode (default: `true`)
+- `enable_context_fmha_fp32_acc`: Enable FP32 accumulation in context FMHA (default: `false`)
+- `cuda_graph_mode`: Whether to use CUDA graph mode (default: `false`)
+- `cuda_graph_cache_size`: Number of CUDA graphs to cache (default: `0`)
+</ParamField>
+
+<ParamField path="fail_fast_on_attention_window_too_large" type="bool" default={false} status="prototype">
+Fail fast when attention window is too large to fit even a single sequence in the KV cache.
+</ParamField>
+
+---
+
+## KV Cache Configuration
+
+The `KvCacheConfig` class controls KV cache memory management.
+
+### Memory Configuration
+
+<ParamField path="kv_cache_config.free_gpu_memory_fraction" type="float" default={0.9}>
+The fraction of GPU memory to allocate for the KV cache (0.0 to 1.0).
+
+**Example:** `0.85` = 85% of free GPU memory
+</ParamField>
+
+<ParamField path="kv_cache_config.max_tokens" type="Optional[int]">
+The maximum number of tokens to store in the KV cache. If both `max_tokens` and `free_gpu_memory_fraction` are specified, the minimum is used.
+</ParamField>
+
+<ParamField path="kv_cache_config.max_gpu_total_bytes" type="int" default={0}>
+The maximum size in bytes of GPU memory for the KV cache. If both this and `free_gpu_memory_fraction` are specified, the minimum is allocated.
+</ParamField>
+
+<ParamField path="kv_cache_config.host_cache_size" type="Optional[int]">
+Size of the host (CPU) cache in bytes.
+</ParamField>
+
+### Cache Reuse
+
+<ParamField path="kv_cache_config.enable_block_reuse" type="bool" default={true}>
+Controls if KV cache blocks can be reused for different requests.
+</ParamField>
+
+<ParamField path="kv_cache_config.enable_partial_reuse" type="bool" default={true}>
+Whether blocks that are only partially matched can be reused.
+</ParamField>
+
+<ParamField path="kv_cache_config.copy_on_partial_reuse" type="bool" default={true}>
+Whether partially matched blocks that are in use can be reused after copying them.
+</ParamField>
+
+### Attention Window
+
+<ParamField path="kv_cache_config.max_attention_window" type="Optional[List[int]]">
+Size of the attention window for each sequence. Only the last N tokens are stored.
+
+**Example:** `[2048]` keeps only the last 2048 tokens per sequence
+</ParamField>
+
+<ParamField path="kv_cache_config.sink_token_length" type="Optional[int]">
+Number of sink tokens (tokens to always keep in attention window).
+</ParamField>
+
+### Advanced Options
+
+<ParamField path="kv_cache_config.tokens_per_block" type="int" default={32}>
+The number of tokens per block in paged attention.
+</ParamField>
+
+<ParamField path="kv_cache_config.onboard_blocks" type="bool" default={true}>
+Controls if blocks are onboarded.
+</ParamField>
+
+<ParamField path="kv_cache_config.use_uvm" type="bool" default={false}>
+Whether to use UVM (Unified Virtual Memory) for the KV cache.
+</ParamField>
+
+<ParamField path="kv_cache_config.dtype" type="str" default="auto">
+The data type to use for the KV cache.
+
+**Options:** `auto`, `fp8`, `nvfp4`, or valid torch dtype strings
+
+**Note:** This is a PyTorch backend only field.
+</ParamField>
+
+<ParamField path="kv_cache_config.cross_kv_cache_fraction" type="Optional[float]">
+The fraction of KV Cache memory reserved for cross attention (encoder-decoder models). Default is 50%.
+</ParamField>
+
+<ParamField path="kv_cache_config.event_buffer_max_size" type="int" default={0}>
+Maximum size of the event buffer. If set to 0, the event buffer is not used.
+</ParamField>
+
+<ParamField path="kv_cache_config.use_kv_cache_manager_v2" type="bool" default={false} status="prototype">
+Whether to use the KV cache manager v2 (experimental).
+</ParamField>
+
+<ParamField path="kv_cache_config.max_util_for_resume" type="float" default={0.95} status="prototype">
+The maximum utilization of the KV cache for resume (0.0 to 1.0). Only used with KV cache manager v2.
+</ParamField>
+
+---
+
+## Example Configurations
+
+### Basic LLM Setup
+
+```python
+from tensorrt_llm import LLM
+from tensorrt_llm.llmapi import LlmArgs
+
+args = LlmArgs(
+    model="meta-llama/Llama-2-7b-hf",
+    dtype="bfloat16",
+    max_batch_size=128,
+    max_input_len=2048,
+    max_num_tokens=4096
+)
+
+llm = LLM(args)
+```
+
+### Tensor Parallel Setup
+
+```python
+args = LlmArgs(
+    model="meta-llama/Llama-2-70b-hf",
+    tensor_parallel_size=4,
+    dtype="bfloat16"
+)
+```
+
+### With Speculative Decoding (EAGLE)
+
+```python
+from tensorrt_llm.llmapi import Eagle3DecodingConfig
+
+args = LlmArgs(
+    model="meta-llama/Llama-3.1-8B-Instruct",
+    speculative_config=Eagle3DecodingConfig(
+        max_draft_len=4,
+        speculative_model="yuhuili/EAGLE3-LLaMA3.1-Instruct-8B"
+    )
+)
+```
+
+### With Quantization
+
+```python
+from tensorrt_llm.llmapi import QuantConfig, QuantAlgo
+
+args = LlmArgs(
+    model="meta-llama/Llama-2-7b-hf",
+    quant_config=QuantConfig(
+        quant_algo=QuantAlgo.FP8
+    )
+)
+```
+
+### Custom KV Cache Configuration
+
+```python
+from tensorrt_llm.llmapi import KvCacheConfig
+
+args = LlmArgs(
+    model="meta-llama/Llama-2-7b-hf",
+    kv_cache_config=KvCacheConfig(
+        free_gpu_memory_fraction=0.8,
+        enable_block_reuse=True,
+        max_attention_window=[4096]
+    )
+)
+```

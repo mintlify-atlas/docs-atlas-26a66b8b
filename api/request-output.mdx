@@ -1,0 +1,348 @@
+---
+title: RequestOutput
+description: Output structure for LLM generation requests
+---
+
+# RequestOutput
+
+The `RequestOutput` class represents the output of a completion request to the LLM. It contains the generated text, tokens, metadata, and optional performance metrics.
+
+## Class Definition
+
+```python
+from tensorrt_llm.llmapi import RequestOutput
+
+# RequestOutput is returned by LLM.generate() and LLM.generate_async()
+output: RequestOutput = llm.generate("What is AI?")
+```
+
+<Note>
+  `RequestOutput` instances are created internally by the executor. Users should not instantiate this class directly.
+</Note>
+
+## Attributes
+
+<ResponseField name="request_id" type="int">
+  Unique identifier for this generation request.
+  ```python
+  print(f"Request ID: {output.request_id}")
+  ```
+</ResponseField>
+
+<ResponseField name="prompt" type="str | None">
+  The original prompt string that was provided to the LLM. May be `None` if the request was submitted as token IDs only.
+  ```python
+  if output.prompt:
+      print(f"Original prompt: {output.prompt}")
+  ```
+</ResponseField>
+
+<ResponseField name="prompt_token_ids" type="List[int]">
+  Token IDs of the input prompt after tokenization.
+  ```python
+  print(f"Prompt length: {len(output.prompt_token_ids)} tokens")
+  ```
+</ResponseField>
+
+<ResponseField name="outputs" type="List[CompletionOutput]">
+  List of completion outputs. Length equals `sampling_params.n` (number of sequences requested).
+  
+  Each `CompletionOutput` contains:
+  - Generated text
+  - Token IDs
+  - Log probabilities (if requested)
+  - Finish reason
+  
+  ```python
+  # Single output
+  text = output.outputs[0].text
+  
+  # Multiple outputs (when n > 1)
+  for i, completion in enumerate(output.outputs):
+      print(f"Output {i}: {completion.text}")
+  ```
+</ResponseField>
+
+<ResponseField name="context_logits" type="torch.Tensor | None">
+  Logits tensor for prompt tokens. Shape: `[prompt_length, vocab_size]`.
+  
+  Only available when `sampling_params.return_context_logits=True`.
+  ```python
+  if output.context_logits is not None:
+      print(f"Context logits shape: {output.context_logits.shape}")
+  ```
+</ResponseField>
+
+<ResponseField name="disaggregated_params" type="DisaggregatedParams | None">
+  Parameters for disaggregated serving, including:
+  - Request type (`context_only`, `generation_only`)
+  - Multimodal embedding handles
+  - Context request ID
+  - First generated tokens
+  
+  Only populated in disaggregated serving mode.
+</ResponseField>
+
+<ResponseField name="finished" type="bool">
+  Whether the entire request has finished processing.
+  ```python
+  if output.finished:
+      print("Generation complete")
+  ```
+</ResponseField>
+
+## Methods
+
+### result()
+
+Wait for the generation to complete and return the result (for async requests).
+
+```python
+future = llm.generate_async("Tell me about AI")
+output = future.result(timeout=30.0)
+print(output.outputs[0].text)
+```
+
+#### Parameters
+
+<ParamField path="timeout" type="float" default="None">
+  Maximum time to wait in seconds. `None` means wait indefinitely.
+</ParamField>
+
+#### Returns
+
+<ResponseField name="output" type="RequestOutput">
+  The completed request output.
+</ResponseField>
+
+### Streaming (Iteration)
+
+For streaming requests, `RequestOutput` can be iterated to get partial results:
+
+```python
+future = llm.generate_async("Write a story", streaming=True)
+
+# Synchronous iteration
+for partial_output in future:
+    new_text = partial_output.outputs[0].text_diff
+    print(new_text, end="", flush=True)
+
+# Async iteration
+async for partial_output in future:
+    new_text = partial_output.outputs[0].text_diff
+    print(new_text, end="", flush=True)
+```
+
+## CompletionOutput
+
+Each `RequestOutput.outputs` entry is a `CompletionOutput` object containing the generated text and metadata.
+
+### Attributes
+
+<ResponseField name="index" type="int">
+  Index of this output in the request (0 to n-1).
+</ResponseField>
+
+<ResponseField name="text" type="str">
+  The generated text output.
+  ```python
+  generated_text = output.outputs[0].text
+  ```
+</ResponseField>
+
+<ResponseField name="token_ids" type="List[int]">
+  Token IDs of the generated output.
+  ```python
+  tokens = output.outputs[0].token_ids
+  print(f"Generated {len(tokens)} tokens")
+  ```
+</ResponseField>
+
+<ResponseField name="cumulative_logprob" type="float | None">
+  Sum of log probabilities for all generated tokens. Used for ranking multiple outputs.
+  ```python
+  logprob = output.outputs[0].cumulative_logprob
+  perplexity = math.exp(-logprob / len(output.outputs[0].token_ids))
+  ```
+</ResponseField>
+
+<ResponseField name="logprobs" type="List[Dict[int, Logprob]] | None">
+  Log probabilities for generated tokens (if `sampling_params.logprobs` was set).
+  
+  Each entry is a dictionary mapping token IDs to `Logprob` objects with:
+  - `logprob`: Log probability value
+  - `rank`: Rank among all tokens (1 = most likely)
+  
+  ```python
+  if output.outputs[0].logprobs:
+      for token_logprobs in output.outputs[0].logprobs:
+          for token_id, logprob_info in token_logprobs.items():
+              print(f"Token {token_id}: logprob={logprob_info.logprob}, rank={logprob_info.rank}")
+  ```
+</ResponseField>
+
+<ResponseField name="prompt_logprobs" type="List[Dict[int, Logprob]] | None">
+  Log probabilities for prompt tokens (if `sampling_params.prompt_logprobs` was set). Same format as `logprobs`.
+</ResponseField>
+
+<ResponseField name="finish_reason" type="Literal['stop', 'length', 'timeout', 'cancelled'] | None">
+  Reason why generation stopped:
+  - `'stop'`: Hit stop string, stop token, or EOS token
+  - `'length'`: Reached `max_tokens` limit
+  - `'timeout'`: Request timed out
+  - `'cancelled'`: Request was cancelled
+  - `None`: Still generating (streaming mode)
+</ResponseField>
+
+<ResponseField name="stop_reason" type="int | str | None">
+  The specific stop string or token ID that caused generation to stop. Only set when `finish_reason='stop'`.
+  ```python
+  if output.outputs[0].finish_reason == 'stop':
+      print(f"Stopped by: {output.outputs[0].stop_reason}")
+  ```
+</ResponseField>
+
+<ResponseField name="generation_logits" type="torch.Tensor | None">
+  Full logits tensor for generated tokens. Shape: `[num_tokens, vocab_size]`.
+  
+  Only available when `sampling_params.return_generation_logits=True`.
+</ResponseField>
+
+<ResponseField name="additional_context_outputs" type="Dict[str, torch.Tensor] | None">
+  Additional model outputs from the context (prompt) phase.
+</ResponseField>
+
+<ResponseField name="additional_generation_outputs" type="Dict[str, torch.Tensor] | None">
+  Additional model outputs from the generation phase.
+</ResponseField>
+
+<ResponseField name="disaggregated_params" type="DisaggregatedParams | None">
+  Disaggregated serving parameters for this output.
+</ResponseField>
+
+<ResponseField name="request_perf_metrics" type="RequestPerfMetrics | None">
+  Performance metrics for this request (if `sampling_params.return_perf_metrics=True`):
+  - Time to first token (TTFT)
+  - Time per output token (TPOT)
+  - End-to-end latency (E2E)
+  - Queue time
+  - Throughput
+</ResponseField>
+
+### Streaming Properties
+
+<ResponseField name="length" type="int">
+  Number of tokens generated so far.
+  ```python
+  print(f"Generated {output.outputs[0].length} tokens")
+  ```
+</ResponseField>
+
+<ResponseField name="text_diff" type="str">
+  Newly generated text since the last update (streaming mode).
+  ```python
+  for partial in future:
+      new_text = partial.outputs[0].text_diff
+      print(new_text, end="", flush=True)
+  ```
+</ResponseField>
+
+<ResponseField name="token_ids_diff" type="List[int]">
+  Newly generated token IDs since the last update (streaming mode).
+</ResponseField>
+
+<ResponseField name="logprobs_diff" type="List[Dict[int, Logprob]]">
+  Log probabilities for newly generated tokens (streaming mode).
+</ResponseField>
+
+## Usage Examples
+
+### Basic Output Access
+
+```python
+output = llm.generate("What is machine learning?")
+
+print(f"Request ID: {output.request_id}")
+print(f"Prompt: {output.prompt}")
+print(f"Generated text: {output.outputs[0].text}")
+print(f"Finish reason: {output.outputs[0].finish_reason}")
+```
+
+### Multiple Outputs
+
+```python
+from tensorrt_llm.sampling_params import SamplingParams
+
+params = SamplingParams(n=3, temperature=0.8, max_tokens=100)
+output = llm.generate("Write a haiku", sampling_params=params)
+
+for i, completion in enumerate(output.outputs):
+    print(f"\n=== Output {i+1} ===")
+    print(completion.text)
+    print(f"Cumulative log prob: {completion.cumulative_logprob}")
+```
+
+### Log Probabilities
+
+```python
+params = SamplingParams(logprobs=5, max_tokens=50)
+output = llm.generate("The capital of France is", sampling_params=params)
+
+for i, token_logprobs in enumerate(output.outputs[0].logprobs):
+    print(f"\nToken position {i}:")
+    for token_id, logprob_info in token_logprobs.items():
+        token_text = llm.tokenizer.decode([token_id])
+        print(f"  {token_text!r}: logprob={logprob_info.logprob:.3f}, rank={logprob_info.rank}")
+```
+
+### Streaming with text_diff
+
+```python
+future = llm.generate_async(
+    "Write a short story about a robot",
+    sampling_params=SamplingParams(max_tokens=500),
+    streaming=True
+)
+
+for partial_output in future:
+    # Print only new text since last iteration
+    new_text = partial_output.outputs[0].text_diff
+    print(new_text, end="", flush=True)
+    
+print("\n\nGeneration complete!")
+print(f"Final finish reason: {partial_output.outputs[0].finish_reason}")
+```
+
+### Performance Metrics
+
+```python
+params = SamplingParams(return_perf_metrics=True, max_tokens=256)
+output = llm.generate("Tell me about quantum computing", sampling_params=params)
+
+metrics = output.outputs[0].request_perf_metrics
+if metrics:
+    print(f"Time to first token: {metrics.ttft:.3f}s")
+    print(f"Time per output token: {metrics.tpot:.3f}s")
+    print(f"End-to-end latency: {metrics.e2e:.3f}s")
+    print(f"Throughput: {metrics.throughput:.1f} tokens/s")
+```
+
+### Async/Await
+
+```python
+import asyncio
+
+async def generate_text():
+    future = llm.generate_async("Explain neural networks")
+    output = await future
+    return output.outputs[0].text
+
+text = asyncio.run(generate_text())
+print(text)
+```
+
+## See Also
+
+- [LLM](/api/llm) - Main LLM class
+- [SamplingParams](/api/sampling-params) - Generation parameters
+- [Tokenizer](/api/tokenizer) - Tokenization interface

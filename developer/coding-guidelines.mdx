@@ -1,0 +1,449 @@
+---
+title: TensorRT-LLM Coding Guidelines
+description: Coding standards and style guidelines for C++ and Python development in TensorRT-LLM
+---
+
+# TensorRT-LLM Coding Guidelines
+
+This document outlines the coding standards and guidelines for contributing to TensorRT-LLM. Following these guidelines ensures consistency, maintainability, and quality across the codebase.
+
+## C++ Coding Guidelines
+
+The TensorRT-LLM C++ Coding Guidelines are mainly derived from the [Google C++ Style Guide](https://google.github.io/styleguide/cppguide.html).
+
+### Namespaces
+
+Closing braces of namespaces should have a comment saying the namespace it closes:
+
+```cpp
+namespace foo
+{
+...
+} // namespace foo
+```
+
+### Constants
+
+1. Prefer `const` or `constexpr` variables over `#defines` whenever possible, as the latter are not visible to the compiler.
+2. A variable that is not modified after its initialization should be declared as `const`.
+3. For naming of constants, see the Naming section.
+
+### Literals
+
+Except `0` (only used in comparison for checking signness/existence/emptiness) and `nullptr`, `true`, `false`, all other literals should only be used for variable initialization.
+
+**Example:**
+
+```cpp
+// Bad
+if (nbInputs == 2U){/*...*/}
+
+// Good
+constexpr size_t kNbInputsWBias = 2U;
+if (nbInputs == kNbInputsWBias) {/*...*/}
+```
+
+### Brace Notation
+
+1. Use the [Allman indentation](https://en.wikipedia.org/wiki/Indent_style#Allman_style) style.
+2. Put the semicolon for an empty `for` or `while` loop in a new line.
+3. The statement forming the body of a `switch`, `while`, `do .. while` or `for` statement shall be a compound statement (use brace-delimited statements).
+4. `if` and `else` should always be followed by brace-delimited statements, even if empty or a single statement.
+
+### Naming
+
+#### 1. Filenames
+- Camel case with first letter lowercase: `thisIsASubDir` and `thisIsAFilename.cpp`
+- All files involved in the compilation of a compilation target (.exe/.so) must have filenames that are case-insensitive unique.
+
+#### 2. Types
+- All types (including class names) are [camel case](https://en.wikipedia.org/wiki/Camel_case) with uppercase first letter.
+- Example: `FooBarClass`
+
+#### 3. Local Variables, Methods and Namespaces
+- Camel case with first letter lowercase.
+- Example: `localFooBar`
+
+#### 4. Non-magic-number Global Variables (non-static, not in anonymous namespace)
+- Camel case prefixed by a lower case 'g'.
+- Example: `gDontUseGlobalFoos`
+
+#### 5. Non-magic-number Global Variables (static or in anonymous namespace)
+- Camel case prefixed by a lower case 's'.
+- Example: `sMutableStaticGlobal`
+
+#### 6. Locally Visible Static Variable
+- Camel case with lowercase prefix 's' as the first letter of the name.
+- Example: `static std::once_flag sFlag;`
+
+#### 7. Class Member Variables
+- Camelcase prefixed with an 'm': `mNbFooValues`.
+- Public member variables do not require the 'm' prefix but it is highly encouraged to use the prefix when needed to improve code clarity.
+
+#### 8. Constants
+- Enumerations, global constants, static constants at class-scope and function-scope magic-number/literal constants are uppercase snakecase with prefix 'k':
+
+```cpp
+int const kDIGIT_NUM = 10;
+```
+
+<Note>
+Function-scope constants that are not magic numbers or literals are named like non-constant variables:
+```cpp
+bool const pass = a && b;
+```
+</Note>
+
+#### 9. Macros
+- See Constants section (preferred over `#define`).
+- If you must use macros, follow uppercase snakecase: `FOO_VERSION`
+
+#### Naming Notes
+- In general don't use [hungarian notation](https://en.wikipedia.org/wiki/Hungarian_notation), except for 'apps hungarian' in some cases such as 'nb' in a variable name to indicate count: `mNbLayers`
+- If a constructor's parameter name `foo` conflicts with a public member name `foo`, add a trailing underscore to the parameter name: `foo_`.
+- Literal suffixes should be upper case. For example, use `1234L` instead of `1234l`.
+
+### Tabs vs Spaces
+
+1. Use only spaces. Do not use tabs.
+2. Indent 4 spaces at a time. This is enforced automatically if you format your code using our clang-format config.
+
+### Formatting
+
+1. Use the [LLVM clang-format](https://clang.llvm.org/docs/ClangFormat.html) tool for formatting your changes prior to submitting the PR.
+2. Use a maximum of 120 characters per line. The auto formatting tool will wrap longer lines.
+3. Exceptions to formatting violations must be justified on a per-case basis. Bypassing the formatting rules is discouraged, but can be achieved for exceptions as follows:
+
+```cpp
+// clang-format off
+// .. Unformatted code ..
+// clang-format on
+```
+
+### Pointers and Memory Allocation
+
+1. Use smart pointers for allocating objects on the heap.
+2. When picking a smart pointer, prefer `unique_ptr` for single resource ownership and `shared_ptr` for shared resource ownership. Use `weak_ptr` only in exceptional cases.
+3. Do not use smart pointers that have been deprecated in C++11.
+
+### Comments
+
+1. C++ comments are required. C comments are not allowed except for special cases (inline).
+2. C++ style for single-line comments: `// This is a single line comment`
+3. In function calls where parameters are not obvious from inspection, it can be helpful to use an inline C comment to document the parameter for readers:
+
+```cpp
+doSomeOperation(/* checkForErrors = */ false);
+```
+
+4. If the comment is a full sentence, it should be capitalized and punctuated properly.
+5. Follow [Doxygen rules](http://www.doxygen.nl/manual/docblocks.html) for documenting new class interfaces and function prototypes:
+   - For C++-style single-line comments use `//!`.
+   - For class members, use `//!<`.
+
+```cpp
+//! This is a Doxygen comment
+//! in C++ style
+
+struct Foo
+{
+    int x; //!< This is a Doxygen comment for members
+}
+```
+
+### Preprocessor Directives
+
+1. `#define` and `#undef` of macros should be done only at global namespace.
+2. Avoid the use of `#ifdef` and `#ifndef` directives (except in the case of header include guards). Prefer to use `#if defined(...)` or `#if !defined(...)` instead:
+
+```cpp
+#if defined(FOO) || defined(BAR)
+void foo();
+#endif // defined(FOO) || defined(BAR)
+```
+
+3. When nesting preprocessor directives, use indentation after the hash mark (#):
+
+```cpp
+#if defined(FOO)
+# if FOO == 0
+#  define BAR 0
+# elif FOO == 1
+#  define BAR 5
+# else
+#  error "invalid FOO value"
+# endif
+#endif
+```
+
+4. Use a preprocessor guard:
+   - The guard name must have prefix `TRTLLM_` followed by the filename, all in caps.
+   - For a header file named `FooBarHello.h`, name the symbol as `TRTLLM_FOO_BAR_HELLO_H`.
+   - Only use the file name to create the symbol.
+   - Do not use prefix with underscore or trailing underscore.
+
+```cpp
+#ifndef TRTLLM_FOO_BAR_HELLO_H
+#define TRTLLM_FOO_BAR_HELLO_H
+// ...
+#endif // TRTLLM_FOO_BAR_HELLO_H
+```
+
+### Additional C++ Guidelines
+
+- **Exceptions**: Must not be thrown across library boundaries.
+- **Casts**: Use the least forceful cast necessary. Prefer `static_cast` over `reinterpret_cast`. Avoid `dynamic_cast`.
+- **Expressions**: Do not use assignment operator in subexpressions.
+- **Switch Statements**: Should be well-structured with proper breaks or throws.
+- **Functions**: Avoid large inline functions. Use anonymous namespaces instead of static for internal linkage.
+- **Signed vs Unsigned**: Use signed integers by default, except for bitmaps or when interfacing with libraries that expect unsigned.
+
+### Common Pitfalls
+
+1. **C headers**: Use C++ headers instead (e.g., `<cstdint>` instead of `<stdint.h>`).
+2. **C library functions**: Avoid when possible. Use brace initialization or `std::fill_n()` instead of `memset()`.
+
+## Python Coding Guidelines
+
+### Python Standard
+
+The code developed for TensorRT-LLM should conform to **Python 3.8+**.
+
+### Indentation
+
+Indent code with 4 spaces. Do not use tabs.
+
+### Imports
+
+Always maintain the namespace when importing, even if only one class or function from a module is used.
+
+**Example:**
+
+```python
+# Bad
+from package.subpackage.foo import SomeClass
+SomeClass()
+
+# Bad
+import package
+package.subpackage.foo.SomeClass()
+
+# Good
+from package.subpackage import foo
+foo.SomeClass()
+```
+
+### Naming
+
+#### Identifier Format
+
+1. **Files**: `snake_case` - `some_file.py`
+2. **Classes**: `PascalCase` - `class SomeClass`
+3. **Functions and Methods**: `snake_case` - `def my_awesome_function():`
+4. **Local Variables**: `snake_case` - `my_variable = ...`
+   - Prefix `k` for variable names that start with a number: `k_99th_percentile = ...`
+5. **Global Variables**: upper `snake_case` and prefix `G` - `G_MY_GLOBAL = ...`
+6. **Constants**: upper `snake_case` - `MY_CONSTANT = ...`
+
+#### Identifier Guidelines
+
+1. Avoid shadowing variables declared in an outer scope.
+2. Initialize all externally visible members of a class in the constructor.
+
+### Comments and Docstrings
+
+1. For interfaces that may be used outside a file, prefer docstrings over comments.
+2. Comments should be reserved for code within a function, or interfaces that are local to a file.
+
+#### Docstring Syntax
+
+Use the [Google style](https://google.github.io/styleguide/pyguide.html), which can be parsed by Sphinx.
+
+**Example:**
+
+```python
+class MyClass:
+    """
+    Description of the class.
+    """
+    def __init__(self):
+        self.x = 5
+        """<type>: Description of 'x'"""
+
+y = 2
+"""<type>: Description of 'y'"""
+```
+
+### Pydantic Guidelines
+
+When defining any user-facing configuration classes (particularly `LlmArgs` or any class used in its fields), **always** use Pydantic classes rather than dataclasses or vanilla classes.
+
+#### Model Structure
+
+- Inherit from `StrictBaseModel` (which sets `extra="forbid"`) to fail fast when users specify invalid field names
+- Use [discriminated unions](https://docs.pydantic.dev/latest/concepts/unions/#discriminated-unions) when a field needs to accept one of several possible config classes
+- **Do not define `__init__` methods** - this bypasses Pydantic's validation and type coercion. Instead:
+  - For validation logic, use `@field_validator` or `@model_validator`
+  - For post-validation initialization, use `model_post_init()`
+  - For custom construction patterns, use classmethods (e.g. `from_yaml()`)
+
+#### Field Definitions
+
+- Add descriptions to all user-facing fields via `Field(description="...")`. Avoid using comments for descriptions.
+- Avoid `dict`, `object`, `Any` as field types - use properly typed alternatives
+- Avoid defining mutable defaults directly; use `default_factory` instead:
+  - Good: `Field(default_factory=list)`, `Field(default_factory=dict)`
+  - Bad: `Field(default=[])`, `Field(default={})`
+- Use `Literal["value1", "value2"]` instead of `str` when a field should only accept certain values
+- Prefer `PositiveInt`, `NonNegativeInt`, `NonNegativeFloat`, `PositiveFloat`, `Field(gt=0)`, `Field(ge=0)` for numeric constraints
+- Use `Field(min_length=1)` to enforce minimum length of a list
+
+#### Validation
+
+- Use `@field_validator` and `@model_validator` instead of manual `validate()` or `is_valid()` methods
+- Raise `ValueError` instead of using assertions
+- Co-locate validation logic within the class itself rather than in a parent class
+
+#### Serialization
+
+- Avoid defining `to_dict()` methods - prefer Pydantic's built-in `model_dump()`:
+  - Good: `MyModel.model_dump()`
+  - Bad: `MyModel.to_dict()`
+- Avoid defining `from_dict()` / `from_kwargs()` methods - prefer constructing the class directly:
+  - Good: `MyModel(**kwargs)`, `MyModel(**my_dict)`
+  - Bad: `MyModel.from_dict(kwargs)`
+
+### Error Handling
+
+1. When using try-except blocks, limit the except to the smallest set of errors possible:
+
+```python
+# Bad
+try:
+    open(path, "r").read()
+except:
+    print("Failed to open file")
+
+# Good
+try:
+    open(path, "r").read()
+except FileNotFoundError:
+    print("Failed to open file")
+```
+
+2. When using try-except blocks to handle multiple possible variable types, keep the body of the try as small as possible:
+
+```python
+# Bad
+try:
+    f.seek(0)
+    f.read()
+except AttributeError:
+    ... # Not a file-like object
+
+# Good
+try:
+    f.seek  # Do not call to minimize chance of unrelated failure
+except AttributeError:
+    ... # Not a file-like object
+else:
+    f.seek(0)
+    f.read()
+```
+
+### Avoid Reflection
+
+Avoid using reflection when functionality can be easily achieved without reflection.
+
+```python
+# Bad
+def make_complex(*args):
+    x, y = args
+    return dict(**locals())
+
+# Good
+def make_complex(x, y):
+    return {'x': x, 'y': y}
+```
+
+## Pre-commit Hooks
+
+We use `pre-commit` for automatic code formatting and validation. Install and set up pre-commit hooks:
+
+```bash
+pip install pre-commit
+pre-commit install
+```
+
+Pre-commit will automatically run the following tools on every commit:
+
+- **isort**: Import sorting
+- **yapf**: Python code formatting
+- **clang-format**: C++ code formatting
+- **cmake-format**: CMake file formatting
+- **autoflake**: Remove unused imports
+- **ruff**: Python linting
+- **codespell**: Spell checking
+- **mdformat**: Markdown formatting
+
+<Warning>
+If any files are modified by pre-commit hooks, you will need to stage and commit them again.
+</Warning>
+
+## Documentation Guidelines
+
+### CLI Options in Documentation
+
+When documenting CLI commands for `trtllm-serve`, `trtllm-bench`, `trtllm-eval`, or similar tools, prefer using `--config` over `--extra_llm_api_options` for specifying configuration files.
+
+**Example:**
+
+```bash
+# Preferred
+trtllm-serve --model <model_path> --config config.yaml
+
+# Avoid
+trtllm-serve --model <model_path> --extra_llm_api_options config.yaml
+```
+
+## NVIDIA Copyright
+
+All TensorRT-LLM Open Source Software code should contain an NVIDIA copyright header that includes the year of its latest meaningful modification. The following block of text should be prepended to the top of all files (`.cpp`, `.h`, `.cu`, `.py`, and other source files):
+
+```cpp
+/*
+ * Copyright (c) 2025, NVIDIA CORPORATION. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+```
+
+<Note>
+Update the copyright year to the current year when modifying existing files.
+</Note>
+
+## Summary
+
+Following these coding guidelines ensures:
+
+- **Consistency**: Code is uniform across the entire codebase
+- **Maintainability**: Code is easier to read, understand, and modify
+- **Quality**: Automated tools catch common errors and enforce best practices
+- **Collaboration**: Team members can work together more effectively
+
+For more information, refer to:
+
+- [Contributing Guide](./contributing)
+- [Building from Source](./build-from-source)
+- [Google C++ Style Guide](https://google.github.io/styleguide/cppguide.html)
+- [Google Python Style Guide](https://google.github.io/styleguide/pyguide.html)

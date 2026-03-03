@@ -1,0 +1,415 @@
+---
+title: LLM
+description: Main class for running LLM inference with TensorRT-LLM
+---
+
+# LLM Class
+
+The `LLM` class is the primary interface for loading and running large language models with TensorRT-LLM. It supports both TensorRT and PyTorch backends.
+
+## Constructor
+
+```python
+from tensorrt_llm import LLM
+
+llm = LLM(
+    model="meta-llama/Llama-3.1-8B-Instruct",
+    tokenizer="meta-llama/Llama-3.1-8B-Instruct",
+    tensor_parallel_size=1,
+    dtype="auto"
+)
+```
+
+### Parameters
+
+<ParamField path="model" type="str | Path" required>
+  Path to the model directory or Hugging Face model identifier. Can be:
+  - Local path to model checkpoint
+  - Hugging Face model ID (e.g., `"meta-llama/Llama-3.1-8B-Instruct"`)
+  - Path to pre-built TensorRT engine directory
+</ParamField>
+
+<ParamField path="tokenizer" type="str | Path | TokenizerBase | PreTrainedTokenizerBase" default="None">
+  Tokenizer to use for encoding/decoding. Can be:
+  - Path to tokenizer directory
+  - Hugging Face tokenizer identifier
+  - Pre-loaded tokenizer instance
+  - If `None`, will attempt to load from model directory
+</ParamField>
+
+<ParamField path="tokenizer_mode" type="Literal['auto', 'slow']" default="'auto'">
+  Tokenizer loading mode:
+  - `'auto'`: Use fast tokenizer if available, otherwise slow
+  - `'slow'`: Force use of slow Python tokenizer
+</ParamField>
+
+<ParamField path="skip_tokenizer_init" type="bool" default="False">
+  Skip tokenizer initialization. Set to `True` if you plan to work with token IDs directly without text.
+</ParamField>
+
+<ParamField path="trust_remote_code" type="bool" default="False">
+  Whether to trust remote code when loading models from Hugging Face Hub. Required for some models with custom code.
+</ParamField>
+
+<ParamField path="tensor_parallel_size" type="int" default="1">
+  Number of GPUs to use for tensor parallelism. Distributes model layers across multiple GPUs.
+</ParamField>
+
+<ParamField path="dtype" type="str" default="'auto'">
+  Data type for model weights. Options:
+  - `'auto'`: Automatically select based on model configuration
+  - `'float16'`: 16-bit floating point
+  - `'bfloat16'`: Brain floating point 16
+  - `'float32'`: 32-bit floating point
+</ParamField>
+
+<ParamField path="revision" type="str" default="None">
+  Specific model revision to use (e.g., branch name, tag, or commit hash) when loading from Hugging Face Hub.
+</ParamField>
+
+<ParamField path="tokenizer_revision" type="str" default="None">
+  Specific tokenizer revision to use when loading from Hugging Face Hub.
+</ParamField>
+
+<ParamField path="backend" type="Literal['tensorrt', 'pytorch', '_autodeploy']" default="None">
+  Execution backend:
+  - `'tensorrt'`: TensorRT-optimized engine (legacy)
+  - `'pytorch'`: PyTorch backend (default for most models)
+  - `'_autodeploy'`: Automatic deployment backend (beta)
+</ParamField>
+
+## Methods
+
+### generate()
+
+Generate completions synchronously for one or more prompts.
+
+```python
+outputs = llm.generate(
+    inputs="Tell me about artificial intelligence",
+    sampling_params=SamplingParams(temperature=0.7, top_p=0.9, max_tokens=100)
+)
+```
+
+#### Parameters
+
+<ParamField path="inputs" type="PromptInputs | Sequence[PromptInputs]" required>
+  Input prompt(s). Can be:
+  - Single string: `"Hello, how are you?"`
+  - List of token IDs: `[1, 2, 3, 4]`
+  - Dict with `"prompt"` or `"prompt_token_ids"` keys
+  - List of any of the above for batch processing
+</ParamField>
+
+<ParamField path="sampling_params" type="SamplingParams | List[SamplingParams]" default="None">
+  Sampling parameters for generation. Can be a single `SamplingParams` for all prompts or a list (one per prompt).
+</ParamField>
+
+<ParamField path="use_tqdm" type="bool" default="True">
+  Whether to display a progress bar during batch generation.
+</ParamField>
+
+<ParamField path="lora_request" type="LoRARequest | Sequence[LoRARequest]" default="None">
+  LoRA adapter to apply during generation.
+</ParamField>
+
+<ParamField path="prompt_adapter_request" type="PromptAdapterRequest | Sequence[PromptAdapterRequest]" default="None">
+  Prompt adapter request for generation.
+</ParamField>
+
+<ParamField path="kv_cache_retention_config" type="KvCacheRetentionConfig | Sequence[KvCacheRetentionConfig]" default="None">
+  Configuration for retaining KV cache across requests.
+</ParamField>
+
+<ParamField path="disaggregated_params" type="DisaggregatedParams | Sequence[DisaggregatedParams]" default="None">
+  Parameters for disaggregated serving (separating prefill and decode phases).
+</ParamField>
+
+<ParamField path="scheduling_params" type="SchedulingParams | List[SchedulingParams]" default="None">
+  Advanced scheduling parameters.
+</ParamField>
+
+<ParamField path="cache_salt" type="str | Sequence[str]" default="None">
+  Salt value to limit KV cache reuse to requests with the same salt.
+</ParamField>
+
+#### Returns
+
+<ResponseField name="outputs" type="RequestOutput | List[RequestOutput]">
+  Generation results. Returns a single `RequestOutput` for single prompt input, or list for batch inputs.
+</ResponseField>
+
+### generate_async()
+
+Generate completions asynchronously for a single prompt.
+
+```python
+future = llm.generate_async(
+    inputs="Tell me about artificial intelligence",
+    sampling_params=SamplingParams(temperature=0.7, max_tokens=100),
+    streaming=True
+)
+
+# Wait for completion
+output = future.result()
+
+# Or stream results
+for partial_output in future:
+    print(partial_output.outputs[0].text_diff, end="", flush=True)
+```
+
+#### Parameters
+
+<ParamField path="inputs" type="PromptInputs | PreprocessedInputs" required>
+  Input prompt. Can be text, token IDs, or a `PreprocessedInputs` object returned from `preprocess()`.
+</ParamField>
+
+<ParamField path="sampling_params" type="SamplingParams" default="None">
+  Sampling parameters for generation.
+</ParamField>
+
+<ParamField path="lora_request" type="LoRARequest" default="None">
+  LoRA adapter to apply during generation.
+</ParamField>
+
+<ParamField path="prompt_adapter_request" type="PromptAdapterRequest" default="None">
+  Prompt adapter request for generation.
+</ParamField>
+
+<ParamField path="streaming" type="bool" default="False">
+  Enable streaming mode. When `True`, results can be iterated as they are generated.
+</ParamField>
+
+<ParamField path="kv_cache_retention_config" type="KvCacheRetentionConfig" default="None">
+  Configuration for retaining KV cache.
+</ParamField>
+
+<ParamField path="disaggregated_params" type="DisaggregatedParams" default="None">
+  Parameters for disaggregated serving.
+</ParamField>
+
+<ParamField path="scheduling_params" type="SchedulingParams" default="None">
+  Advanced scheduling parameters.
+</ParamField>
+
+<ParamField path="cache_salt" type="str" default="None">
+  Salt value to limit KV cache reuse.
+</ParamField>
+
+#### Returns
+
+<ResponseField name="output" type="RequestOutput">
+  A `RequestOutput` future that can be awaited or iterated for streaming results.
+</ResponseField>
+
+### preprocess()
+
+Preprocess prompts into token IDs and multimodal parameters without generating. This is useful for separating preprocessing (CPU-heavy) from generation (GPU-heavy).
+
+```python
+preprocessed = llm.preprocess(
+    inputs="Tell me about AI",
+    sampling_params=SamplingParams(max_tokens=100)
+)
+
+# Later, use preprocessed input
+output = llm.generate_async(inputs=preprocessed)
+```
+
+#### Parameters
+
+<ParamField path="inputs" type="PromptInputs" required>
+  Input prompt to preprocess.
+</ParamField>
+
+<ParamField path="sampling_params" type="SamplingParams" default="None">
+  Sampling parameters (needed for special token handling).
+</ParamField>
+
+<ParamField path="disaggregated_params" type="DisaggregatedParams" default="None">
+  Disaggregated serving parameters.
+</ParamField>
+
+#### Returns
+
+<ResponseField name="preprocessed" type="PreprocessedInputs">
+  Preprocessed inputs that can be passed to `generate_async()`.
+</ResponseField>
+
+### save()
+
+Save the built TensorRT engine to disk (TensorRT backend only).
+
+```python
+llm.save("./saved_engine")
+```
+
+#### Parameters
+
+<ParamField path="engine_dir" type="str" required>
+  Directory path where the engine should be saved.
+</ParamField>
+
+### get_stats()
+
+Get runtime statistics from completed requests.
+
+```python
+stats = llm.get_stats(timeout=2.0)
+for stat in stats:
+    print(f"Iteration {stat['iter']}: {stat['gpuMemUsage']} MB GPU memory")
+```
+
+#### Parameters
+
+<ParamField path="timeout" type="float" default="2.0">
+  Maximum time (in seconds) to wait for statistics.
+</ParamField>
+
+#### Returns
+
+<ResponseField name="stats" type="List[dict]">
+  List of runtime statistics dictionaries.
+</ResponseField>
+
+### get_stats_async()
+
+Get runtime statistics asynchronously as an async iterable.
+
+```python
+async for stat in llm.get_stats_async(timeout=2.0):
+    print(f"GPU memory: {stat['gpuMemUsage']} MB")
+```
+
+#### Parameters
+
+<ParamField path="timeout" type="float" default="2.0">
+  Maximum time (in seconds) to wait for statistics.
+</ParamField>
+
+#### Returns
+
+<ResponseField name="stats" type="IterationResult">
+  Async iterable object containing runtime statistics.
+</ResponseField>
+
+### shutdown()
+
+Shutdown the LLM instance and release resources.
+
+```python
+llm.shutdown()
+```
+
+## Attributes
+
+<ResponseField name="tokenizer" type="TokenizerBase | None">
+  The tokenizer instance loaded by the LLM, or `None` if `skip_tokenizer_init=True`.
+</ResponseField>
+
+<ResponseField name="workspace" type="Path | None">
+  Temporary directory for intermediate files (TensorRT backend only).
+</ResponseField>
+
+<ResponseField name="llm_id" type="str">
+  Unique identifier for this LLM instance.
+</ResponseField>
+
+<ResponseField name="disaggregated_params" type="dict">
+  Disaggregated serving parameters for this instance.
+</ResponseField>
+
+## Usage Examples
+
+### Basic Text Generation
+
+```python
+from tensorrt_llm import LLM
+from tensorrt_llm.sampling_params import SamplingParams
+
+# Initialize LLM
+llm = LLM(model="meta-llama/Llama-3.1-8B-Instruct")
+
+# Generate with custom parameters
+output = llm.generate(
+    "What is machine learning?",
+    sampling_params=SamplingParams(
+        temperature=0.7,
+        top_p=0.9,
+        max_tokens=200
+    )
+)
+
+print(output.outputs[0].text)
+```
+
+### Batch Generation
+
+```python
+prompts = [
+    "Tell me about Python",
+    "What is TensorRT?",
+    "Explain neural networks"
+]
+
+outputs = llm.generate(
+    prompts,
+    sampling_params=SamplingParams(max_tokens=100)
+)
+
+for output in outputs:
+    print(f"Prompt: {output.prompt}")
+    print(f"Output: {output.outputs[0].text}\n")
+```
+
+### Streaming Generation
+
+```python
+future = llm.generate_async(
+    "Write a short story",
+    sampling_params=SamplingParams(max_tokens=500),
+    streaming=True
+)
+
+# Stream text as it's generated
+for partial in future:
+    new_text = partial.outputs[0].text_diff
+    print(new_text, end="", flush=True)
+```
+
+### Multi-GPU Inference
+
+```python
+llm = LLM(
+    model="meta-llama/Llama-3.1-70B-Instruct",
+    tensor_parallel_size=4,  # Use 4 GPUs
+    dtype="bfloat16"
+)
+
+output = llm.generate("What is the meaning of life?")
+print(output.outputs[0].text)
+```
+
+### Using PyTorch Backend
+
+```python
+llm = LLM(
+    model="meta-llama/Llama-3.1-8B-Instruct",
+    backend="pytorch",
+    dtype="float16"
+)
+
+output = llm.generate("Hello, world!")
+print(output.outputs[0].text)
+```
+
+## Context Manager
+
+The `LLM` class supports context manager protocol for automatic resource cleanup:
+
+```python
+with LLM(model="meta-llama/Llama-3.1-8B-Instruct") as llm:
+    output = llm.generate("What is AI?")
+    print(output.outputs[0].text)
+# Resources automatically released
+```

@@ -1,0 +1,472 @@
+---
+title: Multimodal Support
+description: Efficient inference for vision-language and audio models with optimized multimodal encoders and KV cache reuse
+---
+
+TensorRT-LLM supports a variety of multimodal models, enabling efficient inference with inputs beyond just text. These models combine specialized encoders for images, video, and audio with powerful LLM decoders.
+
+## Architecture Overview
+
+Multimodal LLMs typically handle non-text inputs by combining a multimodal encoder with an LLM decoder:
+
+<Steps>
+  <Step title="Multimodal Input Processor">
+    Preprocesses raw multimodal input (images, audio) into a format suitable for the encoder, such as pixel values or spectrograms.
+  </Step>
+  
+  <Step title="Multimodal Encoder">
+    Encodes the processed input into embeddings aligned with the LLM's embedding space (e.g., vision transformers for images).
+  </Step>
+  
+  <Step title="Integration with LLM Decoder">
+    Fuses multimodal embeddings with text embeddings as input to the LLM decoder for downstream inference.
+  </Step>
+</Steps>
+
+```
+Image/Audio → Preprocessor → Encoder → Embeddings ──┐
+                                                     ├→ LLM Decoder → Output
+Text Prompt ─────────────────────────────────────────┘
+```
+
+## Supported Models
+
+TensorRT-LLM supports a wide range of multimodal architectures:
+
+<CardGroup cols={2}>
+  <Card title="Vision-Language Models" icon="image">
+    - **LLaVA** (LLaMA + Vision)
+    - **VILA** (Visual Language Assistant)
+    - **Qwen2-VL** (Qwen with Vision)
+    - **NVILA** (NVIDIA Vision-Language)
+    - **BLIP2** (Bootstrapped Language-Image Pre-training)
+    - **Nougat** (Neural OCR for documents)
+  </Card>
+  
+  <Card title="Audio Models" icon="microphone">
+    - **Whisper** (Speech recognition)
+    - **Audio-language models** (coming soon)
+  </Card>
+</CardGroup>
+
+<Info>
+For the complete and up-to-date support matrix, see the [Multimodal Feature Support Matrix](../models/supported-models.md#multimodal-feature-support-matrix-pytorch-backend).
+</Info>
+
+## Optimizations
+
+TensorRT-LLM incorporates key optimizations to enhance multimodal inference performance:
+
+<AccordionGroup>
+  <Accordion title="In-Flight Batching">
+    Batches multimodal requests within the GPU executor to improve GPU utilization and throughput. Context-phase (image encoding) and generation-phase requests are batched together.
+  </Accordion>
+  
+  <Accordion title="CPU/GPU Concurrency">
+    Asynchronously overlaps data preprocessing on the CPU with image encoding on the GPU, reducing end-to-end latency.
+  </Accordion>
+  
+  <Accordion title="Raw Data Hashing">
+    Leverages image hashes and token chunk information to improve KV cache reuse and minimize collisions. Identical images across requests share cached encoder outputs.
+  </Accordion>
+</AccordionGroup>
+
+## Quick Start
+
+### Basic Usage
+
+Run a vision-language model with a single image:
+
+```python
+from tensorrt_llm import LLM
+from tensorrt_llm.inputs import TextPrompt
+from PIL import Image
+
+# Load image
+image = Image.open("/path/to/image.jpg")
+
+# Create multimodal prompt
+prompt = TextPrompt(
+    prompt="Describe this image in detail.",
+    multi_modal_data={"image": [image]}
+)
+
+# Initialize model
+llm = LLM(model="Efficient-Large-Model/NVILA-8B")
+
+# Generate
+outputs = llm.generate(prompt)
+print(outputs[0].text)
+```
+
+### Multiple Images
+
+Process multiple images in a single prompt:
+
+```python
+from tensorrt_llm.inputs import TextPrompt
+from PIL import Image
+
+image1 = Image.open("/path/to/image1.jpg")
+image2 = Image.open("/path/to/image2.jpg")
+
+prompt = TextPrompt(
+    prompt="What are the differences between these two images?",
+    multi_modal_data={"image": [image1, image2]}
+)
+
+outputs = llm.generate(prompt)
+```
+
+### KV Cache Reuse with UUIDs
+
+For better cache management across sessions, provide custom UUIDs:
+
+```python
+from tensorrt_llm.inputs import TextPrompt
+from PIL import Image
+
+image1 = Image.open("/path/to/image1.jpg")
+image2 = Image.open("/path/to/image2.jpg")
+
+prompt = TextPrompt(
+    prompt="Describe these images.",
+    multi_modal_data={"image": [image1, image2]},
+    multi_modal_uuids={"image": ["image-001", "image-002"]}
+)
+
+outputs = llm.generate(prompt)
+```
+
+<Info>
+**Why use UUIDs?** Custom UUIDs enable deterministic cache management. The same UUID + content combination always produces the same cache key, allowing you to:
+- Track cache entries externally
+- Implement per-user cache isolation
+- Pre-warm cache with known images
+- Manage cache lifecycle across sessions
+</Info>
+
+## Serving Multimodal Models
+
+### Start OpenAI-Compatible Server
+
+Launch a server with multimodal support:
+
+```bash
+trtllm-serve Qwen/Qwen2-VL-7B-Instruct --backend pytorch
+```
+
+### Send Requests with Images
+
+<Tabs>
+  <Tab title="Python (OpenAI SDK)">
+    ```python
+    import openai
+    import base64
+    
+    # Encode image to base64
+    with open("/path/to/image.jpg", "rb") as f:
+        image_data = base64.b64encode(f.read()).decode("utf-8")
+    
+    client = openai.OpenAI(
+        base_url="http://localhost:8000/v1",
+        api_key="dummy"
+    )
+    
+    response = client.chat.completions.create(
+        model="Qwen/Qwen2-VL-7B-Instruct",
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "What's in this image?"},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{image_data}"
+                        }
+                    }
+                ]
+            }
+        ]
+    )
+    
+    print(response.choices[0].message.content)
+    ```
+  </Tab>
+  
+  <Tab title="cURL">
+    ```bash
+    # Save this as request.json
+    {
+      "model": "Qwen/Qwen2-VL-7B-Instruct",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {"type": "text", "text": "Describe this image"},
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.com/image.jpg"
+              }
+            }
+          ]
+        }
+      ]
+    }
+    
+    # Send request
+    curl http://localhost:8000/v1/chat/completions \
+      -H "Content-Type: application/json" \
+      -d @request.json
+    ```
+    
+    See the [multimodal client script](https://github.com/NVIDIA/TensorRT-LLM/blob/main/examples/serve/curl_chat_client_for_multimodal.sh) for a complete example.
+  </Tab>
+</Tabs>
+
+## Benchmarking
+
+Evaluate multimodal inference performance:
+
+```bash
+trtllm-bench \
+  --model Qwen/Qwen2-VL-7B-Instruct \
+  throughput \
+  --dataset /path/to/multimodal_dataset.json \
+  --num_requests 100
+```
+
+<Note>
+For detailed benchmarking instructions, see the [performance benchmarking guide](../developer-guide/perf-benchmarking.md).
+</Note>
+
+## Configuration Options
+
+### Disable KV Cache Reuse
+
+For testing or when cache reuse is not beneficial:
+
+```bash
+python quickstart_multimodal.py \
+  --model Efficient-Large-Model/NVILA-8B \
+  --modality image \
+  --disable_kv_cache_reuse
+```
+
+Or in Python:
+
+```python
+from tensorrt_llm import LLM
+from tensorrt_llm.llmapi import KvCacheConfig
+
+kv_cache_config = KvCacheConfig(
+    enable_block_reuse=False
+)
+
+llm = LLM(
+    model="Efficient-Large-Model/NVILA-8B",
+    kv_cache_config=kv_cache_config
+)
+```
+
+### Multimodal-Specific Cache Settings
+
+```python
+from tensorrt_llm import LLM
+from tensorrt_llm.llmapi import KvCacheConfig
+
+kv_cache_config = KvCacheConfig(
+    enable_block_reuse=True,           # Enable cross-request reuse
+    free_gpu_memory_fraction=0.9,      # Allocate 90% of free GPU memory
+    dtype='fp8'                         # Use FP8 KV cache (2x memory savings)
+)
+
+llm = LLM(
+    model="Qwen/Qwen2-VL-7B-Instruct",
+    kv_cache_config=kv_cache_config
+)
+```
+
+## Model-Specific Examples
+
+### LLaVA
+
+```python
+from tensorrt_llm import LLM
+from tensorrt_llm.inputs import TextPrompt
+from PIL import Image
+
+image = Image.open("/path/to/image.jpg")
+
+prompt = TextPrompt(
+    prompt="USER: <image>\nWhat is shown in this image?\nASSISTANT:",
+    multi_modal_data={"image": [image]}
+)
+
+llm = LLM(model="llava-hf/llava-1.5-7b-hf")
+outputs = llm.generate(prompt)
+```
+
+### NVILA
+
+```python
+from tensorrt_llm import LLM
+from tensorrt_llm.inputs import TextPrompt
+from PIL import Image
+
+image = Image.open("/path/to/image.jpg")
+
+prompt = TextPrompt(
+    prompt="Describe this image in detail.",
+    multi_modal_data={"image": [image]}
+)
+
+llm = LLM(model="Efficient-Large-Model/NVILA-8B")
+outputs = llm.generate(prompt)
+```
+
+### Qwen2-VL
+
+```python
+from tensorrt_llm import LLM
+from tensorrt_llm.inputs import TextPrompt
+from PIL import Image
+
+image = Image.open("/path/to/image.jpg")
+
+prompt = TextPrompt(
+    prompt="<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>Describe this image.<|im_end|>\n<|im_start|>assistant\n",
+    multi_modal_data={"image": [image]}
+)
+
+llm = LLM(model="Qwen/Qwen2-VL-7B-Instruct")
+outputs = llm.generate(prompt)
+```
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Image Preprocessing">
+    - Resize images to model's expected resolution before inference
+    - Use appropriate image format (JPEG, PNG) based on content
+    - Normalize pixel values according to model requirements
+    - Batch multiple images when possible for better throughput
+  </Accordion>
+  
+  <Accordion title="KV Cache Management">
+    - Enable `enable_block_reuse=True` for scenarios with repeated images
+    - Use custom `multi_modal_uuids` for deterministic cache keys
+    - Allocate sufficient GPU memory for KV cache (90%+ of free memory)
+    - Consider FP8 KV cache for 2x memory savings
+  </Accordion>
+  
+  <Accordion title="Prompt Engineering">
+    - Follow model-specific prompt templates (LLaVA uses `USER:/ASSISTANT:`, Qwen uses special tokens)
+    - Place image tokens where the model expects them
+    - Be explicit about what you want the model to analyze
+    - For multiple images, clearly reference which image you're asking about
+  </Accordion>
+  
+  <Accordion title="Performance Optimization">
+    - Use in-flight batching to mix image encoding and text generation
+    - Enable CPU/GPU concurrency for image preprocessing
+    - Monitor cache hit rates for repeated images
+    - Benchmark with representative workloads
+  </Accordion>
+</AccordionGroup>
+
+## Limitations
+
+<Warning>
+- Vision components use FP16 by default (cannot be quantized independently)
+- Some models have specific image resolution requirements
+- Multi-image support varies by model architecture
+- Video inputs are supported only for specific models (check support matrix)
+</Warning>
+
+## Complete Example
+
+Here's a full example with all best practices:
+
+```python
+from tensorrt_llm import LLM
+from tensorrt_llm.inputs import TextPrompt
+from tensorrt_llm.llmapi import KvCacheConfig
+from tensorrt_llm.sampling_params import SamplingParams
+from PIL import Image
+import hashlib
+
+# Load and prepare images
+image1 = Image.open("/path/to/product1.jpg")
+image2 = Image.open("/path/to/product2.jpg")
+
+# Generate stable UUIDs based on image content or external IDs
+image1_uuid = "product-image-12345"
+image2_uuid = "product-image-67890"
+
+# Configure KV cache with reuse
+kv_cache_config = KvCacheConfig(
+    enable_block_reuse=True,
+    free_gpu_memory_fraction=0.9,
+    dtype='fp8',
+    host_cache_size=2*1024**3  # 2GB host cache for overflow
+)
+
+# Initialize model
+llm = LLM(
+    model="Qwen/Qwen2-VL-7B-Instruct",
+    kv_cache_config=kv_cache_config
+)
+
+# Create prompts with UUIDs for cache management
+prompts = [
+    TextPrompt(
+        prompt="Describe the product in this image.",
+        multi_modal_data={"image": [image1]},
+        multi_modal_uuids={"image": [image1_uuid]}
+    ),
+    TextPrompt(
+        prompt="Describe the product in this image.",
+        multi_modal_data={"image": [image2]},
+        multi_modal_uuids={"image": [image2_uuid]}
+    ),
+    TextPrompt(
+        prompt="What are the differences between these products?",
+        multi_modal_data={"image": [image1, image2]},
+        multi_modal_uuids={"image": [image1_uuid, image2_uuid]}
+    )
+]
+
+# Configure sampling
+sampling_params = SamplingParams(
+    max_tokens=200,
+    temperature=0.7
+)
+
+# Generate (third prompt reuses cached encodings from first two)
+for output in llm.generate(prompts, sampling_params):
+    print(output.text)
+    print("-" * 80)
+```
+
+## Additional Resources
+
+<CardGroup cols={2}>
+  <Card title="Multimodal Examples" icon="python" href="https://github.com/NVIDIA/TensorRT-LLM/blob/main/examples/llm-api/quickstart_multimodal.py">
+    Complete quickstart example for multimodal models
+  </Card>
+  
+  <Card title="Supported Models" icon="list" href="../models/supported-models.md#multimodal-feature-support-matrix-pytorch-backend">
+    Full multimodal model support matrix
+  </Card>
+  
+  <Card title="Serving Script" icon="terminal" href="https://github.com/NVIDIA/TensorRT-LLM/blob/main/examples/serve/curl_chat_client_for_multimodal.sh">
+    Example serving client for multimodal requests
+  </Card>
+  
+  <Card title="Benchmarking Guide" icon="chart-line" href="../developer-guide/perf-benchmarking.md">
+    Measure multimodal inference performance
+  </Card>
+</CardGroup>

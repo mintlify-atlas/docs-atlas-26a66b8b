@@ -1,0 +1,390 @@
+---
+title: "Benchmarking"
+description: "Comprehensive guide to benchmarking TensorRT-LLM with trtllm-bench"
+icon: "chart-line"
+---
+
+TensorRT-LLM provides the `trtllm-bench` CLI, a packaged benchmarking utility designed to make it easier to reproduce officially published performance results and measure your own workloads.
+
+## Overview
+
+`trtllm-bench` offers:
+
+- A streamlined way to build tuned engines for benchmarking across various models and platforms
+- An entirely Python workflow for benchmarking
+- Ability to benchmark various flows and features within TensorRT-LLM
+- Support for throughput and latency benchmarking modes
+
+<Tip>
+  `trtllm-bench` can automatically download models from Hugging Face Model Hub. Export your token in the `HF_TOKEN` environment variable.
+</Tip>
+
+## Before You Begin
+
+For rigorous benchmarking where consistent and reproducible results are critical, proper GPU configuration is essential. These settings help maximize GPU utilization, eliminate performance variability, and ensure optimal conditions for accurate measurements.
+
+<Steps>
+  <Step title="Enable Persistence Mode">
+    Ensure persistence mode is enabled to maintain consistent GPU state:
+    
+    ```bash
+    sudo nvidia-smi -pm 1
+    ```
+  </Step>
+
+  <Step title="Reset GPU Clock Management">
+    Allow the GPU to dynamically adjust its clock speeds based on workload and temperature:
+    
+    ```bash
+    sudo nvidia-smi -rgc
+    ```
+    
+    <Note>
+      While locking clocks at maximum frequency might seem beneficial, it can sometimes lead to thermal throttling and reduced performance.
+    </Note>
+  </Step>
+
+  <Step title="Set Power Limits">
+    First query the maximum power limit:
+    
+    ```bash
+    nvidia-smi -q -d POWER
+    ```
+    
+    Then configure the GPU to operate at its maximum power limit:
+    
+    ```bash
+    sudo nvidia-smi -pl <max_power_limit>
+    ```
+  </Step>
+
+  <Step title="Configure Boost Settings (if supported)">
+    Check if your GPU supports boost levels:
+    
+    ```bash
+    sudo nvidia-smi boost-slider -l
+    ```
+    
+    If supported, enable the boost slider:
+    
+    ```bash
+    sudo nvidia-smi boost-slider --vboost <max_boost_slider>
+    ```
+  </Step>
+</Steps>
+
+## Validated Networks
+
+While `trtllm-bench` should work with any network that TensorRT-LLM supports, the following have been extensively validated:
+
+<CardGroup cols={2}>
+  <Card title="Llama Models" icon="llama">
+    - meta-llama/Llama-2-7b-hf
+    - meta-llama/Llama-2-70b-hf
+    - meta-llama/Meta-Llama-3-8B
+    - meta-llama/Meta-Llama-3-70B
+    - meta-llama/Llama-3.1-8B
+    - meta-llama/Llama-3.1-70B
+    - meta-llama/Llama-3.1-405B
+  </Card>
+  
+  <Card title="Other Models" icon="brain">
+    - mistralai/Mistral-7B-v0.1
+    - mistralai/Mixtral-8x7B-v0.1
+    - tiiuae/falcon-180B
+    - EleutherAI/gpt-j-6b
+  </Card>
+</CardGroup>
+
+## Supported Quantization Modes
+
+`trtllm-bench` supports the following quantization modes:
+
+- **None** - No quantization applied
+- **FP8** - 8-bit floating point quantization
+- **NVFP4** - 4-bit NVIDIA floating point quantization
+
+<Note>
+  Although TensorRT-LLM supports more quantization modes, `trtllm-bench` currently only configures for this subset.
+</Note>
+
+## Preparing a Dataset
+
+The throughput benchmark uses a fixed JSON schema to specify requests:
+
+| Key | Required | Type | Description |
+|-----|----------|------|-------------|
+| `task_id` | Yes | String | Unique identifier for the request |
+| `prompt` | No* | String | Input text for generation |
+| `input_ids` | Yes* | List[Integer] | Token IDs that make up the prompt |
+| `output_tokens` | Yes | Integer | Number of tokens to generate |
+
+<Warning>
+  You must specify either `prompt` or `input_ids`, but not both. If you specify `input_ids`, the `prompt` entry is ignored.
+</Warning>
+
+### Example Dataset Entries
+
+With human-readable prompts:
+
+```json
+{"task_id": 1, "prompt": "Generate an infinite response to the following: This is the song that never ends, it goes on and on my friend.", "output_tokens": 1000}
+{"task_id": 2, "prompt": "Generate an infinite response to the following: Na, na, na, na", "output_tokens": 1000}
+```
+
+With token IDs:
+
+```json
+{"task_id":0,"input_ids":[863,22056,25603,11943,8932,13195,3132,25032,21747,22213],"output_tokens":128}
+{"task_id":1,"input_ids":[14480,13598,15585,6591,1252,8259,30990,26778,7063,30065,21764,11023,1418],"output_tokens":128}
+```
+
+<Tip>
+  Each JSON entry must be on a single line to ensure the benchmarker can read one line at a time.
+</Tip>
+
+### Generating Synthetic Datasets
+
+Use the `prepare-dataset` command to generate synthetic data:
+
+```bash
+trtllm-bench --model meta-llama/Llama-3.1-8B \
+  prepare-dataset \
+  --output /tmp/synthetic_128_128.txt \
+  token-norm-dist \
+  --input-mean 128 \
+  --output-mean 128 \
+  --input-stdev 0 \
+  --output-stdev 0 \
+  --num-requests 1000
+```
+
+This generates 1000 requests with uniform input/output sequence lengths of 128 tokens.
+
+## Throughput Benchmarking
+
+Benchmark throughput using the PyTorch backend with a prepared dataset:
+
+```bash
+trtllm-bench --model meta-llama/Llama-3.1-8B \
+  --model_path /Ckpt/Path/To/Llama-3.1-8B \
+  throughput \
+  --dataset /tmp/synthetic_128_128.txt \
+  --backend pytorch
+```
+
+<Tip>
+  The `--model_path` option is optional and only needed for locally stored checkpoints. The `--model` is still required for reporting and build heuristics.
+</Tip>
+
+### Example Output
+
+```bash
+===========================================================
+= PyTorch backend
+===========================================================
+Model:                  meta-llama/Llama-3.1-8B
+Model Path:             /Ckpt/Path/To/Llama-3.1-8B
+TensorRT LLM Version:   0.17.0
+Dtype:                  bfloat16
+KV Cache Dtype:         None
+Quantization:           FP8
+
+===========================================================
+= WORLD + RUNTIME INFORMATION
+===========================================================
+TP Size:                1
+PP Size:                1
+Max Runtime Batch Size: 2048
+Max Runtime Tokens:     4096
+Scheduling Policy:      Guaranteed No Evict
+KV Memory Percentage:   90.00%
+Issue Rate (req/sec):   7.6753E+14
+
+===========================================================
+= PERFORMANCE OVERVIEW
+===========================================================
+Number of requests:             3000
+Average Input Length (tokens):  128.0000
+Average Output Length (tokens): 128.0000
+Token Throughput (tokens/sec):  20685.5510
+Request Throughput (req/sec):   161.6059
+Total Latency (ms):             18563.6825
+```
+
+### Streaming Metrics
+
+When enabling streaming, time to first token (TTFT) and inter-token latency (ITL) metrics are also recorded:
+
+```bash
+trtllm-bench --model meta-llama/Llama-3.1-8B \
+  --model_path /Ckpt/Path/To/Llama-3.1-8B \
+  throughput \
+  --dataset /tmp/synthetic_128_128.txt \
+  --backend pytorch \
+  --streaming
+```
+
+## Latency Benchmarking
+
+For low-latency mode benchmarking:
+
+```bash
+trtllm-bench --model meta-llama/Llama-3.1-8B \
+  --model_path /Ckpt/Path/To/Llama-3.1-8B \
+  latency \
+  --dataset /tmp/synthetic_128_128.txt \
+  --backend pytorch
+```
+
+## Benchmarking with LoRA Adapters
+
+The PyTorch workflow supports benchmarking with LoRA (Low-Rank Adaptation) adapters.
+
+<Steps>
+  <Step title="Prepare LoRA Dataset">
+    Generate requests with LoRA metadata:
+    
+    ```bash
+    trtllm-bench \
+      --model /path/to/tokenizer \
+      prepare-dataset \
+      --rand-task-id 0 1 \
+      --lora-dir /path/to/loras \
+      token-norm-dist \
+      --num-requests 100 \
+      --input-mean 128 \
+      --output-mean 128 \
+      --input-stdev 16 \
+      --output-stdev 24 \
+      > synthetic_lora_data.json
+    ```
+    
+    Key options:
+    - `--lora-dir`: Parent directory containing LoRA adapter subdirectories named by task IDs (e.g., `0/`, `1/`)
+    - `--rand-task-id`: Range of LoRA task IDs to randomly assign
+    - `--task-id`: Fixed LoRA task ID for all requests
+  </Step>
+
+  <Step title="Create LoRA Configuration">
+    Create a `config.yaml` file:
+    
+    ```yaml
+    lora_config:
+      lora_dir:
+        - /path/to/loras/0
+        - /path/to/loras/1
+      max_lora_rank: 64
+      lora_target_modules:
+        - attn_q
+        - attn_k
+        - attn_v
+      trtllm_modules_to_hf_modules:
+        attn_q: q_proj
+        attn_k: k_proj
+        attn_v: v_proj
+    ```
+  </Step>
+
+  <Step title="Run Benchmark">
+    ```bash
+    trtllm-bench --model /path/to/base/model \
+      throughput \
+      --dataset synthetic_lora_data.json \
+      --backend pytorch \
+      --config config.yaml
+    ```
+  </Step>
+</Steps>
+
+<Note>
+  The LoRA directory structure should have task-specific subdirectories named by their task IDs. Each subdirectory should contain the LoRA adapter files for that task.
+</Note>
+
+## Multimodal Benchmarking
+
+Benchmark multimodal models (e.g., vision-language models):
+
+<Steps>
+  <Step title="Prepare Multimodal Dataset">
+    ```bash
+    trtllm-bench \
+      --model Qwen/Qwen2-VL-2B-Instruct \
+      prepare-dataset \
+      --output mm_data.jsonl \
+      real-dataset \
+      --dataset-name lmms-lab/MMMU \
+      --dataset-split test \
+      --dataset-image-key image \
+      --dataset-prompt-key question \
+      --num-requests 10 \
+      --output-len-dist 128,5
+    ```
+  </Step>
+
+  <Step title="Run Benchmark">
+    ```bash
+    trtllm-bench --model Qwen/Qwen2-VL-2B-Instruct \
+      throughput \
+      --dataset mm_data.jsonl \
+      --backend pytorch \
+      --num_requests 10 \
+      --max_batch_size 4 \
+      --modality image
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+  - Only image datasets are currently supported
+  - `--output-len-dist` is required for multimodal datasets
+  - The tokenizer argument is required but unused during dataset preparation
+</Warning>
+
+## Quantization
+
+To run quantized benchmarks, use pre-quantized checkpoints. TensorRT-LLM provides FP8-quantized Llama-3.1 models:
+
+- [nvidia/Llama-3.1-8B-Instruct-FP8](https://huggingface.co/nvidia/Llama-3.1-8B-Instruct-FP8)
+- [nvidia/Llama-3.1-70B-Instruct-FP8](https://huggingface.co/nvidia/Llama-3.1-70B-Instruct-FP8)
+- [nvidia/Llama-3.1-405B-Instruct-FP8](https://huggingface.co/nvidia/Llama-3.1-405B-Instruct-FP8)
+
+### KV Cache Quantization Mapping
+
+When a checkpoint doesn't specify KV cache quantization, `trtllm-bench` applies these defaults:
+
+| Compute Precision | Checkpoint KV Cache | Applied KV Cache |
+|-------------------|---------------------|------------------|
+| `null` | `null` | `null` (no config exists) |
+| `FP8` | `FP8` | `FP8` (matches checkpoint) |
+| `FP8` | `null` | `FP8` (set by benchmark) |
+| `NVFP4` | `null` | `FP8` (set by benchmark) |
+
+### Forcing KV Cache Precision
+
+Override KV cache quantization in your YAML config:
+
+```yaml
+kv_cache_config:
+  dtype: fp8  # valid values: auto, fp8
+```
+
+## Online Serving Benchmarking
+
+For benchmarking the OpenAI-compatible server, see the [trtllm-serve benchmarking guide](/cli/trtllm-serve).
+
+Alternatively, use [AIPerf](https://github.com/ai-dynamo/aiperf), a comprehensive benchmarking tool for OpenAI-compatible servers.
+
+## Related Resources
+
+<CardGroup cols={2}>
+  <Card title="Optimization Guide" icon="gauge-high" href="/performance/optimization-guide">
+    Learn performance tuning best practices
+  </Card>
+  <Card title="Profiling" icon="magnifying-glass-chart" href="/performance/profiling">
+    Profile and analyze performance bottlenecks
+  </Card>
+  <Card title="Reference Configs" icon="file-code" href="/config/reference-configs">
+    170+ optimized serving configurations
+  </Card>
+</CardGroup>

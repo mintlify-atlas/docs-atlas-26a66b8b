@@ -1,0 +1,437 @@
+---
+title: SamplingParams
+description: Configuration for text generation sampling strategies
+---
+
+# SamplingParams
+
+The `SamplingParams` class controls how text is generated from language models. It configures sampling strategies, stopping conditions, penalties, and output options.
+
+## Constructor
+
+```python
+from tensorrt_llm.sampling_params import SamplingParams
+
+sampling_params = SamplingParams(
+    temperature=0.7,
+    top_p=0.9,
+    top_k=50,
+    max_tokens=256
+)
+```
+
+## Parameters
+
+### Token Generation
+
+<ParamField path="max_tokens" type="int" default="32">
+  Maximum number of tokens to generate per output sequence.
+</ParamField>
+
+<ParamField path="min_tokens" type="int" default="None">
+  Minimum number of tokens to generate. Values < 1 have no effect. Prevents early stopping.
+</ParamField>
+
+### Sampling Strategy
+
+<ParamField path="temperature" type="float" default="None">
+  Temperature for sampling (≥ 0). Controls randomness:
+  - `0.0`: Greedy decoding (deterministic)
+  - `< 1.0`: More focused, deterministic outputs
+  - `= 1.0`: Standard sampling
+  - `> 1.0`: More random, creative outputs
+  
+  If `None` and neither `top_p` nor `top_k` are specified, defaults to greedy decoding.
+</ParamField>
+
+<ParamField path="top_p" type="float" default="None">
+  Nucleus sampling threshold (0 to 1). Only tokens with cumulative probability ≥ `top_p` are considered.
+  - `1.0`: Consider all tokens (standard sampling)
+  - `< 1.0`: Consider only most probable tokens
+  
+  If `None` and neither `temperature` nor `top_k` are specified, defaults to greedy decoding.
+</ParamField>
+
+<ParamField path="top_k" type="int" default="None">
+  Sample from the top K most likely tokens. 
+  - `0`: Consider all tokens
+  - `1`: Greedy decoding
+  - `> 1`: Limit sampling to top K tokens
+  
+  If `None` and neither `temperature` nor `top_p` are specified, defaults to greedy decoding.
+</ParamField>
+
+<ParamField path="top_p_min" type="float" default="None">
+  Lower bound for top-P decay algorithm. Defaults to 1e-6.
+</ParamField>
+
+<ParamField path="top_p_decay" type="float" default="None">
+  Decay factor for top-P algorithm. Defaults to 1.0.
+</ParamField>
+
+<ParamField path="top_p_reset_ids" type="int" default="None">
+  Token ID where top-P decay resets. Defaults to 1.
+</ParamField>
+
+<ParamField path="min_p" type="float" default="None">
+  Minimum token probability threshold. Scales the most likely token to determine minimum probability. Defaults to 0.0.
+</ParamField>
+
+<ParamField path="seed" type="int" default="None">
+  Random seed for reproducible sampling. Defaults to 0.
+</ParamField>
+
+### Beam Search
+
+<ParamField path="use_beam_search" type="bool" default="False">
+  Enable beam search instead of sampling. When `True`, `best_of` becomes the beam width.
+</ParamField>
+
+<ParamField path="n" type="int" default="1">
+  Number of output sequences to return per prompt.
+</ParamField>
+
+<ParamField path="best_of" type="int" default="None">
+  Number of sequences to generate for selection:
+  - **Sampling mode**: Generate `best_of` sequences, return top `n` by cumulative log probability
+  - **Beam search mode**: Use beam width of `best_of`, return top `n`
+  
+  Must satisfy `best_of >= n`. Defaults to `n`.
+</ParamField>
+
+<ParamField path="beam_search_diversity_rate" type="float" default="None">
+  Diversity penalty for beam search. Values > 1.0 encourage diverse beams. Defaults to 1.0.
+</ParamField>
+
+<ParamField path="beam_width_array" type="List[int]" default="None">
+  Array of beam widths for variable-beam-width search.
+</ParamField>
+
+<ParamField path="length_penalty" type="float" default="None">
+  Exponential penalty for sequence length in beam search. Defaults to 0.0.
+</ParamField>
+
+<ParamField path="early_stopping" type="int" default="None">
+  Stop beam search when `beam_width` complete sequences are generated. Defaults to 1.
+</ParamField>
+
+### Stopping Conditions
+
+<ParamField path="end_id" type="int" default="None">
+  End-of-sequence token ID. Generation stops when this token is generated. Defaults to tokenizer's EOS token.
+</ParamField>
+
+<ParamField path="pad_id" type="int" default="None">
+  Padding token ID. Defaults to `end_id`.
+</ParamField>
+
+<ParamField path="stop" type="str | List[str]" default="None">
+  Stop string(s). Generation stops when any of these strings are generated.
+  ```python
+  SamplingParams(stop=["\n\n", "END", "###"])
+  ```
+</ParamField>
+
+<ParamField path="stop_token_ids" type="List[int]" default="None">
+  Stop token IDs. Generation stops when any of these tokens are generated.
+</ParamField>
+
+<ParamField path="include_stop_str_in_output" type="bool" default="False">
+  Include stop string in the output text. When `False`, stop strings are removed.
+</ParamField>
+
+<ParamField path="ignore_eos" type="bool" default="False">
+  Continue generation after EOS token is generated.
+</ParamField>
+
+### Bad Words / Tokens
+
+<ParamField path="bad" type="str | List[str]" default="None">
+  Bad string(s) to avoid. When these would be generated, they are redirected to alternative tokens.
+</ParamField>
+
+<ParamField path="bad_token_ids" type="List[int]" default="None">
+  Token IDs to avoid during generation.
+</ParamField>
+
+### Repetition Control
+
+<ParamField path="repetition_penalty" type="float" default="None">
+  Penalty for repeating tokens:
+  - `< 1.0`: Encourage repetition
+  - `= 1.0`: No penalty (default)
+  - `> 1.0`: Discourage repetition
+</ParamField>
+
+<ParamField path="presence_penalty" type="float" default="None">
+  Penalty for tokens that have already appeared (independent of frequency):
+  - `< 0.0`: Encourage repetition
+  - `= 0.0`: No penalty (default)
+  - `> 0.0`: Discourage repetition
+</ParamField>
+
+<ParamField path="frequency_penalty" type="float" default="None">
+  Penalty based on token frequency in generated text:
+  - `< 0.0`: Encourage repetition
+  - `= 0.0`: No penalty (default)
+  - `> 0.0`: Discourage repetition (stronger for more frequent tokens)
+</ParamField>
+
+<ParamField path="prompt_ignore_length" type="int" default="None">
+  Number of prompt tokens to ignore for presence/frequency penalties. Defaults to 0.
+</ParamField>
+
+<ParamField path="no_repeat_ngram_size" type="int" default="None">
+  Prevent repetition of n-grams of this size. Defaults to very large value (no limit).
+</ParamField>
+
+### Output Control
+
+<ParamField path="logprobs" type="int" default="None">
+  Number of log probabilities to return per output token:
+  - `None`: No log probabilities
+  - `0`: Only the sampled token's log probability
+  - `K > 0`: Top-K log probabilities plus sampled token (if not in top-K)
+</ParamField>
+
+<ParamField path="prompt_logprobs" type="int" default="None">
+  Number of log probabilities to return per prompt token. Same format as `logprobs`.
+</ParamField>
+
+<ParamField path="logprobs_mode" type="LogprobMode" default="LogprobMode.RAW">
+  Log probability calculation mode:
+  - `LogprobMode.RAW`: Raw log probabilities from model output
+  - `LogprobMode.PROCESSED`: After applying sampling parameters (temperature, top-k, top-p)
+</ParamField>
+
+<ParamField path="return_context_logits" type="bool" default="False">
+  Return full logits tensor for prompt tokens.
+</ParamField>
+
+<ParamField path="return_generation_logits" type="bool" default="False">
+  Return full logits tensor for generated tokens.
+</ParamField>
+
+<ParamField path="exclude_input_from_output" type="bool" default="True">
+  Exclude input tokens from output token IDs.
+</ParamField>
+
+<ParamField path="return_encoder_output" type="bool" default="False">
+  Return encoder hidden states for encoder-decoder models.
+</ParamField>
+
+<ParamField path="return_perf_metrics" type="bool" default="False">
+  Include performance metrics in output (TTFT, latency, throughput, etc.).
+</ParamField>
+
+<ParamField path="additional_model_outputs" type="List[str]" default="None">
+  Additional model outputs to gather (model-specific).
+</ParamField>
+
+### Tokenization
+
+<ParamField path="detokenize" type="bool" default="True">
+  Convert output token IDs to text.
+</ParamField>
+
+<ParamField path="add_special_tokens" type="bool" default="True">
+  Add special tokens (BOS, EOS) when encoding the prompt.
+</ParamField>
+
+<ParamField path="skip_special_tokens" type="bool" default="True">
+  Skip special tokens when decoding output text.
+</ParamField>
+
+<ParamField path="spaces_between_special_tokens" type="bool" default="True">
+  Add spaces between special tokens in decoded output.
+</ParamField>
+
+<ParamField path="truncate_prompt_tokens" type="int" default="None">
+  Truncate prompt to last K tokens (left truncation). Must be ≥ 1.
+</ParamField>
+
+### Advanced
+
+<ParamField path="embedding_bias" type="torch.Tensor" default="None">
+  Embedding bias tensor of shape `[vocab_size]` with dtype `float32`.
+</ParamField>
+
+<ParamField path="logits_processor" type="LogitsProcessor | List[LogitsProcessor]" default="None">
+  Custom logits processor callback(s) to modify logits before sampling. Can be a single processor or list.
+</ParamField>
+
+<ParamField path="apply_batched_logits_processor" type="bool" default="False">
+  Apply batched logits processor. Processor must be provided when initializing `LLM`.
+</ParamField>
+
+<ParamField path="lookahead_config" type="LookaheadDecodingConfig" default="None">
+  Configuration for lookahead decoding optimization.
+</ParamField>
+
+<ParamField path="guided_decoding" type="GuidedDecodingParams" default="None">
+  Guided decoding parameters for structured output (JSON, regex, grammar).
+</ParamField>
+
+## Usage Examples
+
+### Basic Sampling
+
+```python
+from tensorrt_llm.sampling_params import SamplingParams
+
+# Balanced creativity
+params = SamplingParams(
+    temperature=0.7,
+    top_p=0.9,
+    max_tokens=256
+)
+```
+
+### Greedy Decoding
+
+```python
+# Deterministic output
+params = SamplingParams(
+    temperature=0.0,  # or top_k=1
+    max_tokens=100
+)
+```
+
+### Beam Search
+
+```python
+params = SamplingParams(
+    use_beam_search=True,
+    best_of=4,  # beam width
+    n=1,        # return best sequence
+    max_tokens=200
+)
+```
+
+### Stop Strings
+
+```python
+params = SamplingParams(
+    stop=["\n\n", "###", "END"],
+    include_stop_str_in_output=False,
+    max_tokens=500
+)
+```
+
+### Multiple Outputs
+
+```python
+# Generate 5 candidates, return best 3
+params = SamplingParams(
+    n=3,
+    best_of=5,
+    temperature=0.8,
+    max_tokens=150
+)
+```
+
+### Log Probabilities
+
+```python
+params = SamplingParams(
+    logprobs=5,              # Top-5 token log probs
+    prompt_logprobs=3,       # Top-3 for prompt tokens
+    max_tokens=100
+)
+
+output = llm.generate("Hello", sampling_params=params)
+for token_logprobs in output.outputs[0].logprobs:
+    print(token_logprobs)  # Dict[token_id -> Logprob]
+```
+
+### Repetition Control
+
+```python
+params = SamplingParams(
+    repetition_penalty=1.2,      # Discourage repetition
+    frequency_penalty=0.5,       # Penalize frequent tokens
+    presence_penalty=0.3,        # Penalize any repeated tokens
+    no_repeat_ngram_size=3,      # No 3-gram repetition
+    max_tokens=300
+)
+```
+
+### Structured Output with Guided Decoding
+
+```python
+from tensorrt_llm.sampling_params import SamplingParams, GuidedDecodingParams
+
+# JSON output
+params = SamplingParams(
+    guided_decoding=GuidedDecodingParams(
+        json={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "age": {"type": "integer"}
+            },
+            "required": ["name", "age"]
+        }
+    ),
+    max_tokens=200
+)
+
+# Regex pattern
+params = SamplingParams(
+    guided_decoding=GuidedDecodingParams(
+        regex=r"\d{3}-\d{3}-\d{4}"  # Phone number format
+    ),
+    max_tokens=50
+)
+```
+
+### Performance Monitoring
+
+```python
+params = SamplingParams(
+    return_perf_metrics=True,
+    max_tokens=256
+)
+
+output = llm.generate("Test prompt", sampling_params=params)
+metrics = output.outputs[0].request_perf_metrics
+print(f"Time to first token: {metrics.ttft}")
+print(f"Throughput: {metrics.throughput}")
+```
+
+## Related Classes
+
+### GuidedDecodingParams
+
+Parameters for structured output generation:
+
+```python
+from tensorrt_llm.sampling_params import GuidedDecodingParams
+
+guided = GuidedDecodingParams(
+    json_object=True  # Any valid JSON object
+)
+# OR
+guided = GuidedDecodingParams(
+    json={...}  # Specific JSON schema
+)
+# OR
+guided = GuidedDecodingParams(
+    regex="pattern"  # Regex pattern
+)
+# OR
+guided = GuidedDecodingParams(
+    grammar="EBNF grammar"  # EBNF grammar
+)
+```
+
+### LogprobMode
+
+Enum for log probability modes:
+
+```python
+from tensorrt_llm.sampling_params import LogprobMode
+
+LogprobMode.RAW        # Raw model output logits
+LogprobMode.PROCESSED  # After temperature/top-k/top-p
+```

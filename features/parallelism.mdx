@@ -1,0 +1,403 @@
+---
+title: Parallelism Strategies
+description: Scale LLM inference across multiple GPUs with tensor, pipeline, data, expert, and context parallelism
+---
+
+Parallelism across multiple GPUs becomes necessary when either the model cannot fit in a single GPU's memory, or a single GPU cannot deliver the desired performance.
+
+TensorRT-LLM supports multiple parallelism strategies for deployment on both single and multiple nodes.
+
+## Parallelism Types
+
+<CardGroup cols={2}>
+  <Card title="Tensor Parallel (TP)" icon="grid-2">
+    Shards model weights across GPUs. Best for small batch sizes and memory-constrained scenarios.
+  </Card>
+  
+  <Card title="Pipeline Parallel (PP)" icon="layer-group">
+    Distributes model layers across GPUs. Best for large models that don't fit in single GPU memory.
+  </Card>
+  
+  <Card title="Data Parallel (DP)" icon="copy">
+    Replicates model across GPUs for different requests. Best for large batch sizes and high throughput.
+  </Card>
+  
+  <Card title="Expert Parallel (EP)" icon="network-wired">
+    Distributes experts across GPUs for MoE models. Best for models with high expert count.
+  </Card>
+  
+  <Card title="Context Parallel (CP)" icon="text-width">
+    Distributes context processing across GPUs. Best for long context scenarios.
+  </Card>
+  
+  <Card title="Wide Expert Parallel" icon="expand">
+    Advanced EP with load balancing for large-scale MoE models. Best for DeepSeek-V3/R1, LLaMA4, Qwen3.
+  </Card>
+</CardGroup>
+
+## Attention Module Parallelism
+
+### Tensor Parallelism for Attention
+
+<Tabs>
+  <Tab title="Configuration">
+    ```yaml
+    # config.yaml
+    tensor_parallel_size: 8
+    enable_attention_dp: false  # Use TP for attention (default)
+    ```
+    
+    ```bash
+    trtllm-serve meta-llama/Llama-3.1-70B-Instruct --config config.yaml
+    ```
+  </Tab>
+  
+  <Tab title="How It Works">
+    - GEMM weights before/after attention are evenly sharded across GPUs
+    - `num_heads` are sharded across GPUs
+    - All GPUs process the same input tokens
+    - Results are combined through all-reduce communication
+    
+    **Exceptions:**
+    - **DeepSeek-R1**: `fused_A` GEMM is NOT sharded
+    - **GQA/MQA/MLA**: If `num_heads < tensor_parallel_size`, KV cache is replicated on every GPU
+  </Tab>
+  
+  <Tab title="Best For">
+    - Small batch sizes (1-8 requests)
+    - Memory-constrained scenarios
+    - Models with many attention heads
+    - Low-latency requirements
+  </Tab>
+</Tabs>
+
+### Data Parallelism for Attention
+
+<Tabs>
+  <Tab title="Configuration">
+    ```yaml
+    # config.yaml
+    tensor_parallel_size: 8
+    enable_attention_dp: true  # Use DP for attention
+    ```
+    
+    ```bash
+    trtllm-serve meta-llama/Llama-3.1-70B-Instruct --config config.yaml
+    ```
+  </Tab>
+  
+  <Tab title="How It Works">
+    - All GEMM weights are **replicated** on every GPU
+    - KV cache is **partitioned** across GPUs
+    - Different user requests are routed to different DP ranks
+    - No cross-GPU communication during attention
+  </Tab>
+  
+  <Tab title="Best For">
+    - Large batch sizes (16+ requests)
+    - High throughput scenarios
+    - Models with fewer attention heads
+    - When memory allows full model replication
+  </Tab>
+</Tabs>
+
+## FFN Module Parallelism
+
+### Dense Models
+
+For dense (non-MoE) models, tensor parallelism is supported:
+
+```yaml
+# config.yaml
+tensor_parallel_size: 8
+```
+
+FFN weights are sharded across all GPUs, with results combined through all-reduce.
+
+### Mixture of Experts (MoE)
+
+MoE models replace a single FFN with multiple experts. TensorRT-LLM supports three execution patterns:
+
+<Tabs>
+  <Tab title="TP (Tensor Parallel)">
+    ```yaml
+    # config.yaml
+    tensor_parallel_size: 8
+    moe_tensor_parallel_size: 8
+    ```
+    
+    **How it works:**
+    - Every expert's weight matrix is sliced across all GPUs
+    - Each GPU sees all tokens
+    - Higher communication overhead
+    - Better load balancing
+  </Tab>
+  
+  <Tab title="EP (Expert Parallel)">
+    ```yaml
+    # config.yaml
+    tensor_parallel_size: 8
+    moe_expert_parallel_size: 8
+    ```
+    
+    **How it works:**
+    - Full weights of each expert reside on a single GPU
+    - Each GPU only sees tokens routed to its local experts
+    - Lower communication overhead
+    - Potential load imbalance
+  </Tab>
+  
+  <Tab title="Hybrid ETP">
+    ```yaml
+    # config.yaml
+    tensor_parallel_size: 8      # 4 × 2
+    moe_tensor_parallel_size: 4
+    moe_expert_parallel_size: 2
+    ```
+    
+    **How it works:**
+    - Each GPU stores a subset of experts (EP)
+    - Those experts are further sharded (TP)
+    - Balances workload and kernel efficiency
+    - `moe_tensor_parallel_size * moe_expert_parallel_size = tensor_parallel_size`
+  </Tab>
+</Tabs>
+
+<Warning>
+The product of `moe_tensor_parallel_size` and `moe_expert_parallel_size` must equal `tensor_parallel_size`.
+</Warning>
+
+## Wide Expert Parallelism (Wide-EP)
+
+Wide-EP is TensorRT-LLM's advanced solution for large-scale MoE model inference, addressing workload imbalance through intelligent load balancing.
+
+### Motivation
+
+Large-scale MoE models like DeepSeek-V3/R1, LLaMA4, and Qwen3 introduce challenges:
+
+- **High memory demands** for expert weights
+- **Inherent expert-level workload imbalance** due to sparse execution
+- **Communication overhead** in distributed expert parallelism
+- **Hot expert problem** where certain experts receive significantly more tokens
+
+### Key Features
+
+<AccordionGroup>
+  <Accordion title="Expert Replication and Load Balancing">
+    Wide-EP introduces **expert slots** decoupled from specific experts:
+    - Multiple replicas of hot experts across different GPUs
+    - Dynamic expert placement based on workload patterns
+    - Both offline and online load balancing strategies
+  </Accordion>
+  
+  <Accordion title="Custom EP Communication Kernels">
+    - Optimized for NVIDIA GB200 Multi-Node NVLink (MNNVL)
+    - Efficient all-to-all communication for expert dispatch and combine
+    - Reduced communication overhead vs traditional EP
+  </Accordion>
+  
+  <Accordion title="Expert Parallelism Load Balancer (EPLB)">
+    - **Offline EPLB**: Pre-computed expert placement based on historical workload statistics
+    - **Online EPLB**: Dynamic expert placement that adapts to real-time traffic patterns
+    - Layer-wise weight redistribution to minimize inference disruption
+  </Accordion>
+</AccordionGroup>
+
+### Architecture Overview
+
+Wide-EP separates **experts** (model perspective) from **slots** (engine perspective):
+
+```
+Model has: Expert 0, Expert 1, Expert 2, ..., Expert N
+Engine has: Slot 0, Slot 1, Slot 2, ..., Slot M
+
+Routing Table: Expert ID → Slot ID (updated by load balancer)
+```
+
+This allows:
+- Same expert to be replicated in multiple slots
+- Dynamic remapping based on workload
+- Load balancing without model retraining
+
+### Best Practices
+
+<Steps>
+  <Step title="Start with offline EPLB">
+    For production deployments with known workload patterns, use offline EPLB to pre-compute optimal expert placement.
+  </Step>
+  
+  <Step title="Use online EPLB for dynamic workloads">
+    When traffic patterns change frequently or are unpredictable, enable online EPLB for real-time adaptation.
+  </Step>
+  
+  <Step title="Monitor expert statistics">
+    Track which experts receive the most tokens to understand workload distribution and validate load balancing effectiveness.
+  </Step>
+  
+  <Step title="Tune max_num_tokens">
+    Balance memory constraints and EP size by adjusting the maximum number of tokens per expert.
+  </Step>
+  
+  <Step title="Test with representative datasets">
+    Validate load balancing with datasets that match your production workload.
+  </Step>
+</Steps>
+
+<Info>
+For detailed implementation examples and advanced usage, see:
+- [`examples/wide_ep/`](https://github.com/NVIDIA/TensorRT-LLM/tree/main/examples/wide_ep/): Complete Wide-EP examples
+- [`examples/wide_ep/ep_load_balancer/`](https://github.com/NVIDIA/TensorRT-LLM/tree/main/examples/wide_ep/ep_load_balancer/): Load balancing tools
+- [`examples/wide_ep/slurm_scripts/`](https://github.com/NVIDIA/TensorRT-LLM/tree/main/examples/wide_ep/slurm_scripts/): Cluster deployment scripts
+</Info>
+
+## Practical Configuration Examples
+
+### Single Node Deployment
+
+<Tabs>
+  <Tab title="8xH100 - LLaMA 70B">
+    ```yaml
+    # Tensor parallelism across 8 GPUs
+    tensor_parallel_size: 8
+    enable_attention_dp: false
+    ```
+    
+    ```bash
+    trtllm-serve meta-llama/Llama-3.1-70B-Instruct --config config.yaml
+    ```
+  </Tab>
+  
+  <Tab title="8xH100 - Mixtral 8x7B">
+    ```yaml
+    # Hybrid parallelism for MoE
+    tensor_parallel_size: 8
+    moe_tensor_parallel_size: 4
+    moe_expert_parallel_size: 2
+    ```
+    
+    ```bash
+    trtllm-serve mistralai/Mixtral-8x7B-Instruct-v0.1 --config config.yaml
+    ```
+  </Tab>
+  
+  <Tab title="8xH100 - High Throughput">
+    ```yaml
+    # Data parallelism for throughput
+    tensor_parallel_size: 8
+    enable_attention_dp: true
+    ```
+    
+    ```bash
+    trtllm-serve meta-llama/Llama-3.1-8B-Instruct --config config.yaml
+    ```
+  </Tab>
+</Tabs>
+
+### Multi-Node Deployment
+
+<Tabs>
+  <Tab title="16xH100 (2 Nodes) - LLaMA 405B">
+    ```yaml
+    # Cross-node tensor parallelism
+    tensor_parallel_size: 16
+    pipeline_parallel_size: 1
+    ```
+    
+    Requires multi-node orchestration (MPI, Ray, or Slurm).
+  </Tab>
+  
+  <Tab title="32xH100 (4 Nodes) - DeepSeek-V3">
+    ```yaml
+    # Wide-EP for large MoE
+    tensor_parallel_size: 32
+    moe_expert_parallel_size: 32
+    # Enable Wide-EP features via examples/wide_ep/
+    ```
+    
+    See Wide-EP documentation for full configuration.
+  </Tab>
+</Tabs>
+
+## Benchmarking Parallelism Strategies
+
+Test different parallelism configurations:
+
+```bash
+# Test TP-8
+trtllm-bench --model meta-llama/Llama-3.1-70B-Instruct \
+  throughput \
+  --dataset /path/to/dataset.json \
+  --config tp8_config.yaml
+
+# Test DP-8 (attention)
+trtllm-bench --model meta-llama/Llama-3.1-70B-Instruct \
+  throughput \
+  --dataset /path/to/dataset.json \
+  --config dp8_config.yaml
+
+# Compare throughput and latency
+```
+
+<Note>
+For optimal performance, consult the [reference configs database](https://github.com/NVIDIA/TensorRT-LLM/tree/main/examples/configs/database/) which contains 170+ pareto-optimized configurations across multiple models and GPUs.
+</Note>
+
+## Performance Tuning Guide
+
+<AccordionGroup>
+  <Accordion title="Choosing TP vs DP for Attention">
+    **Use TP when:**
+    - Batch size is small (1-8)
+    - Model doesn't fit in single GPU memory
+    - Low latency is critical
+    
+    **Use DP when:**
+    - Batch size is large (16+)
+    - Model fits in single GPU memory
+    - High throughput is the goal
+  </Accordion>
+  
+  <Accordion title="MoE Parallelism Selection">
+    **Use pure TP when:**
+    - Expert count is low (8-16 experts)
+    - Load is balanced across experts
+    - Maximum kernel efficiency is needed
+    
+    **Use pure EP when:**
+    - Expert count is high (64+ experts)
+    - Memory per GPU is limited
+    - Communication bandwidth is high
+    
+    **Use Hybrid ETP when:**
+    - Balancing between TP and EP benefits
+    - Moderate expert count (16-64)
+    - Need workload and kernel efficiency balance
+  </Accordion>
+  
+  <Accordion title="Wide-EP Considerations">
+    - Only use for large-scale MoE models (DeepSeek-V3, LLaMA4, Qwen3)
+    - Monitor expert hit rates to identify hot experts
+    - Start with offline EPLB, migrate to online if workload varies
+    - Ensure high-bandwidth interconnect (NVLink, InfiniBand)
+  </Accordion>
+</AccordionGroup>
+
+## Additional Resources
+
+<CardGroup cols={2}>
+  <Card title="Wide-EP Technical Blog" icon="blog" href="https://github.com/NVIDIA/TensorRT-LLM/blob/main/docs/source/blogs/tech_blog/blog4_Scaling_Expert_Parallelism_in_TensorRT-LLM.md">
+    Deep dive into Wide Expert Parallelism
+  </Card>
+  
+  <Card title="DeepSeek-V3 Paper" icon="file-pdf" href="https://arxiv.org/abs/2412.19437">
+    Research paper on large-scale MoE architecture
+  </Card>
+  
+  <Card title="EPLB Implementation" icon="github" href="https://github.com/deepseek-ai/EPLB">
+    Expert Parallelism Load Balancer reference
+  </Card>
+  
+  <Card title="Reference Configs" icon="database" href="https://github.com/NVIDIA/TensorRT-LLM/tree/main/examples/configs/database/">
+    170+ optimized serving configurations
+  </Card>
+</CardGroup>

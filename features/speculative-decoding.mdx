@@ -1,0 +1,335 @@
+---
+title: Speculative Decoding
+description: Accelerate LLM inference at low batch sizes using draft-target models, EAGLE, N-gram, and MTP techniques
+---
+
+Speculative decoding is a technique for accelerating LLM inference at low batch sizes. A lightweight drafting mechanism proposes candidate tokens, and the target model verifies them in a single forward pass. Tokens that match are accepted, reducing the number of sequential forward passes needed.
+
+## How It Works
+
+Speculative decoding operates on a simple principle:
+
+1. A **draft model** (smaller/faster) generates candidate tokens
+2. The **target model** (larger/accurate) verifies all candidates in parallel
+3. Matching tokens are accepted, non-matching tokens trigger rejection and resampling
+4. The process repeats until the sequence is complete
+
+<Info>
+Speculation is most effective at low batch sizes where GPU utilization is not saturated. Speed improvements are typically observed when batch size is small.
+</Info>
+
+## Supported Methods
+
+TensorRT-LLM supports multiple speculative decoding algorithms:
+
+<CardGroup cols={2}>
+  <Card title="Draft/Target" icon="arrows-split-up-and-left">
+    Use any smaller model as a draft for the target model
+  </Card>
+  
+  <Card title="EAGLE 3" icon="eagle">
+    Specialized draft models trained for speculative decoding
+  </Card>
+  
+  <Card title="N-gram" icon="hashtag">
+    Prompt lookup decoding using token prefix matching
+  </Card>
+  
+  <Card title="MTP" icon="layer-group">
+    Multi-token prediction for DeepSeek models
+  </Card>
+</CardGroup>
+
+## Quick Start Examples
+
+### Draft/Target Decoding
+
+The simplest form of speculative decoding uses an arbitrary draft model:
+
+```python
+from tensorrt_llm.llmapi import DraftTargetDecodingConfig
+from tensorrt_llm import LLM
+
+# Option 1: Use a HuggingFace Hub model ID (auto-downloaded)
+speculative_config = DraftTargetDecodingConfig(
+    max_draft_len=3,
+    speculative_model="yuhuili/EAGLE3-LLaMA3.1-Instruct-8B"
+)
+
+# Option 2: Use a local path
+# speculative_config = DraftTargetDecodingConfig(
+#     max_draft_len=3,
+#     speculative_model="/path/to/draft_model"
+# )
+
+llm = LLM(
+    "/path/to/target_model",
+    speculative_config=speculative_config,
+    disable_overlap_scheduler=True
+)
+
+outputs = llm.generate("What is the capital of France?")
+```
+
+<Warning>
+Make sure the draft and target models use the **same tokenizer**. Mismatched tokenizers result in extremely low acceptance rates and degraded performance.
+</Warning>
+
+### EAGLE 3 Decoding
+
+EAGLE 3 uses specialized draft models trained specifically for speculative decoding:
+
+```python
+from tensorrt_llm.llmapi import Eagle3DecodingConfig
+from tensorrt_llm import LLM
+
+model = "meta-llama/Llama-3.1-8B-Instruct"
+speculative_model = "yuhuili/EAGLE3-LLaMA3.1-Instruct-8B"
+
+speculative_config = Eagle3DecodingConfig(
+    max_draft_len=3,
+    speculative_model=speculative_model
+)
+
+llm = LLM(model, speculative_config=speculative_config)
+outputs = llm.generate("Explain quantum computing")
+```
+
+#### Available EAGLE 3 Models
+
+<Tabs>
+  <Tab title="LLaMA 3">
+    Use checkpoints from the [original EAGLE 3 authors](https://huggingface.co/yuhuili):
+    - `yuhuili/EAGLE3-LLaMA3.1-Instruct-8B`
+    - `yuhuili/EAGLE3-LLaMA3.1-Instruct-70B`
+  </Tab>
+  
+  <Tab title="LLaMA 4 Maverick">
+    Use NVIDIA's checkpoint:
+    - `nvidia/Llama-4-Maverick-17B-128E-Eagle3`
+  </Tab>
+  
+  <Tab title="Other Models">
+    Check the [Speculative Decoding Modules collection](https://huggingface.co/collections/nvidia/speculative-decoding-modules) for:
+    - `gpt-oss-120b`
+    - `Qwen3`
+    - And more
+  </Tab>
+</Tabs>
+
+<Note>
+TensorRT-LLM supports a modified version of EAGLE 3. Tree structures for draft sequences are not supported; instead, each request uses a single sequence of draft tokens with length `max_draft_len`.
+</Note>
+
+### N-gram Decoding (Prompt Lookup)
+
+N-gram decoding maintains a map from token prefixes to candidate draft sequences:
+
+```python
+from tensorrt_llm.llmapi import NGramDecodingConfig
+from tensorrt_llm import LLM
+
+speculative_config = NGramDecodingConfig(
+    max_draft_len=3,
+    max_matching_ngram_size=4,
+    is_public_pool=True
+)
+
+llm = LLM(
+    "/path/to/target_model",
+    speculative_config=speculative_config,
+    disable_overlap_scheduler=True
+)
+
+outputs = llm.generate("The quick brown fox jumps over the lazy dog")
+```
+
+#### N-gram Configuration Options
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `max_draft_len` | int | Maximum draft candidate length |
+| `max_matching_ngram_size` | int | Maximum prompt suffix length to match with keys in the pool |
+| `is_public_pool` | bool | If true, a single n-gram pool is shared for all requests |
+| `is_keep_all` | bool | If true, draft candidates are retained forever. Otherwise, only the largest candidate is retained |
+| `is_use_oldest` | bool | If true, use the oldest draft candidate. Only applicable if `is_keep_all == True` |
+
+<Info>
+N-gram decoding works particularly well for repetitive text patterns and when prompts share common prefixes.
+</Info>
+
+### MTP (Multi-Token Prediction)
+
+MTP is currently only supported for DeepSeek models:
+
+```python
+from tensorrt_llm.llmapi import MTPDecodingConfig
+from tensorrt_llm import LLM
+
+speculative_config = MTPDecodingConfig(
+    max_draft_len=3,
+    num_nextn_predict_layers=3
+)
+
+llm = LLM(
+    "/path/to/deepseek_model",
+    speculative_config=speculative_config
+)
+
+outputs = llm.generate("Solve the following problem: 2 + 2 = ?")
+```
+
+#### MTP Configuration Options
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `max_draft_len` | int | Maximum draft candidate length (must match `num_nextn_predict_layers`) |
+| `num_nextn_predict_layers` | int | Number of MTP modules to use |
+| `use_relaxed_acceptance_for_thinking` | bool | Use relaxed decoding for reasoning models in thinking phase |
+| `relaxed_topk` | int | Top K tokens sampled for relaxed decoding candidate set |
+| `relaxed_delta` | float | Delta threshold for filtering relaxed decoding candidates |
+
+<Note>
+Relaxed acceptance mode allows draft tokens to be accepted if they appear in a candidate set, providing more flexibility during the reasoning phase.
+</Note>
+
+### User-Provided Drafting
+
+For advanced use cases, you can implement custom drafting logic:
+
+```python
+from tensorrt_llm.llmapi import UserProvidedDecodingConfig
+from tensorrt_llm import LLM
+
+# Implement your custom drafter
+class MyDrafter:
+    def prepare_draft_tokens(self, ...):
+        # Your custom drafting logic
+        pass
+
+speculative_config = UserProvidedDecodingConfig(
+    max_draft_len=3,
+    drafter=MyDrafter()
+)
+
+llm = LLM(
+    "/path/to/target_model",
+    speculative_config=speculative_config
+)
+```
+
+## Using with trtllm-bench and trtllm-serve
+
+Speculative decoding options must be specified via `--config config.yaml` for both `trtllm-bench` and `trtllm-serve`.
+
+### YAML Configuration
+
+Create a `config.yaml` file:
+
+<Tabs>
+  <Tab title="EAGLE 3">
+    ```yaml
+    speculative_config:
+      decoding_type: Eagle3
+      max_draft_len: 4
+      speculative_model: yuhuili/EAGLE3-LLaMA3.1-Instruct-8B
+    ```
+  </Tab>
+  
+  <Tab title="Draft/Target">
+    ```yaml
+    speculative_config:
+      decoding_type: DraftTarget
+      max_draft_len: 3
+      speculative_model: /path/to/draft/model
+    ```
+  </Tab>
+  
+  <Tab title="N-gram">
+    ```yaml
+    speculative_config:
+      decoding_type: NGram
+      max_draft_len: 3
+      max_matching_ngram_size: 4
+      is_public_pool: true
+    ```
+  </Tab>
+  
+  <Tab title="MTP">
+    ```yaml
+    speculative_config:
+      decoding_type: MTP
+      max_draft_len: 3
+      num_nextn_predict_layers: 3
+    ```
+  </Tab>
+</Tabs>
+
+### Running Benchmarks
+
+```bash
+trtllm-bench --model meta-llama/Llama-3.1-8B-Instruct \
+  throughput \
+  --dataset /path/to/dataset.json \
+  --config config.yaml
+```
+
+### Serving with Speculation
+
+```bash
+trtllm-serve meta-llama/Llama-3.1-8B-Instruct \
+  --config config.yaml \
+  --port 8000
+```
+
+<Note>
+The field name `speculative_model_dir` can also be used as an alias for `speculative_config.speculative_model`.
+</Note>
+
+## Performance Considerations
+
+<AccordionGroup>
+  <Accordion title="When to Use Speculative Decoding">
+    Speculative decoding is most effective when:
+    - Batch size is small (1-4 requests)
+    - GPU utilization is low
+    - Latency reduction is more important than throughput
+    - Draft model is significantly faster than target model
+  </Accordion>
+  
+  <Accordion title="Choosing max_draft_len">
+    - **Higher values** (4-6): Better speedup potential, but lower acceptance rate
+    - **Lower values** (2-3): Higher acceptance rate, but less speedup per iteration
+    - Optimal value depends on model similarity and task
+    - Start with 3 and tune based on acceptance rate metrics
+  </Accordion>
+  
+  <Accordion title="Draft Model Selection">
+    - Use models from the same family (better tokenizer match)
+    - Smaller draft models (1-3B) work well with larger targets (7B+)
+    - EAGLE-trained models typically achieve higher acceptance rates
+    - Test acceptance rate on representative prompts
+  </Accordion>
+</AccordionGroup>
+
+## Backend Support
+
+<Warning>
+The PyTorch backend currently only supports **EAGLE 3**. The `decoding_type: Eagle` is accepted as a backward-compatible alias for `Eagle3`, but EAGLE v1/v2 draft checkpoints are incompatible.
+</Warning>
+
+## Additional Resources
+
+<CardGroup cols={2}>
+  <Card title="EAGLE 3 Paper" icon="file-pdf" href="https://arxiv.org/pdf/2503.01840">
+    Technical paper: EAGLE-3: Scaling up Inference Acceleration
+  </Card>
+  
+  <Card title="Speculative Decoding Modules" icon="huggingface" href="https://huggingface.co/collections/nvidia/speculative-decoding-modules">
+    Browse NVIDIA's draft model collection
+  </Card>
+  
+  <Card title="Prompt Lookup Decoding" icon="github" href="https://github.com/apoorvumang/prompt-lookup-decoding">
+    Original N-gram implementation reference
+  </Card>
+</CardGroup>

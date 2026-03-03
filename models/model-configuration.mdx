@@ -1,0 +1,550 @@
+---
+title: Model Configuration
+description: Configure TensorRT-LLM models with PretrainedConfig and model-specific parameters
+icon: sliders
+---
+
+TensorRT-LLM provides a flexible configuration system for customizing model behavior, quantization, parallelism, and runtime settings.
+
+## Configuration Overview
+
+Every model in TensorRT-LLM uses a configuration class that inherits from `PretrainedConfig`. This class defines all model architecture parameters and runtime options.
+
+<CodeGroup>
+```python Basic Configuration
+from tensorrt_llm import LLM
+
+# Automatic configuration from HuggingFace
+llm = LLM(model="meta-llama/Meta-Llama-3.1-8B")
+```
+
+```python Custom Configuration
+from tensorrt_llm import LLM
+from tensorrt_llm.models import LLaMAConfig
+
+config = LLaMAConfig(
+    architecture="LlamaForCausalLM",
+    dtype="float16",
+    hidden_size=4096,
+    num_hidden_layers=32,
+    num_attention_heads=32,
+    vocab_size=32000,
+    max_position_embeddings=4096,
+)
+
+llm = LLM(config=config)
+```
+</CodeGroup>
+
+## PretrainedConfig Parameters
+
+The base `PretrainedConfig` class provides common parameters for all models:
+
+### Core Architecture Parameters
+
+<ParamField path="architecture" type="str" required>
+  Model architecture name (e.g., `"LlamaForCausalLM"`, `"GPTForCausalLM"`)
+</ParamField>
+
+<ParamField path="dtype" type="str" default="float16">
+  Model data type: `"float32"`, `"float16"`, `"bfloat16"`, `"float8"`, `"int8"`
+</ParamField>
+
+<ParamField path="hidden_size" type="int" required>
+  Dimension of hidden layers (e.g., 4096 for LLaMA-7B)
+</ParamField>
+
+<ParamField path="num_hidden_layers" type="int" required>
+  Number of transformer layers (e.g., 32 for LLaMA-7B)
+</ParamField>
+
+<ParamField path="num_attention_heads" type="int" required>
+  Number of attention heads (e.g., 32 for LLaMA-7B)
+</ParamField>
+
+<ParamField path="vocab_size" type="int">
+  Size of the vocabulary (e.g., 32000 for LLaMA)
+</ParamField>
+
+<ParamField path="intermediate_size" type="int">
+  Dimension of feedforward layers (defaults to `hidden_size * 4`)
+</ParamField>
+
+<ParamField path="num_key_value_heads" type="int">
+  Number of KV heads for Grouped Query Attention (defaults to `num_attention_heads` for MHA)
+</ParamField>
+
+<ParamField path="head_size" type="int">
+  Size of each attention head (defaults to `hidden_size / num_attention_heads`)
+</ParamField>
+
+### Position Embeddings
+
+<ParamField path="position_embedding_type" type="str" default="learned_absolute">
+  Position embedding type:
+  - `"learned_absolute"` - Learned absolute positions
+  - `"rope_gpt_neox"` - Rotary Position Embedding (GPT-NeoX style)
+  - `"rope_gptj"` - RoPE (GPT-J style)
+  - `"alibi"` - ALiBi attention bias
+  - `"alibi_with_scale"` - Scaled ALiBi
+</ParamField>
+
+<ParamField path="max_position_embeddings" type="int">
+  Maximum sequence length supported by the model
+</ParamField>
+
+<ParamField path="rotary_embedding_dim" type="int">
+  Dimension for rotary embeddings (defaults to `head_size`)
+</ParamField>
+
+### Activation & Normalization
+
+<ParamField path="hidden_act" type="str" default="gelu">
+  Activation function: `"gelu"`, `"relu"`, `"silu"`, `"swiglu"`, `"geglu"`, `"fast_gelu"`
+</ParamField>
+
+<ParamField path="norm_epsilon" type="float" default="1e-5">
+  Epsilon for layer normalization
+</ParamField>
+
+<ParamField path="logits_dtype" type="str" default="float32">
+  Data type for logits output (typically `"float32"` for numerical stability)
+</ParamField>
+
+### QK LayerNorm
+
+<ParamField path="qk_layernorm" type="bool" default="false">
+  Apply LayerNorm to query/key projections (used in some models like Gemma)
+</ParamField>
+
+## Quantization Configuration
+
+TensorRT-LLM uses the `QuantConfig` class for quantization settings:
+
+<CodeGroup>
+```python FP8 Quantization
+from tensorrt_llm import LLM
+from tensorrt_llm.models.modeling_utils import QuantConfig
+from tensorrt_llm.quantization.mode import QuantAlgo
+
+quant_config = QuantConfig(
+    quant_algo=QuantAlgo.FP8,
+    kv_cache_quant_algo=QuantAlgo.FP8
+)
+
+llm = LLM(
+    model="meta-llama/Meta-Llama-3.1-70B",
+    quantization=quant_config
+)
+```
+
+```python INT8 Weight-Only
+from tensorrt_llm.models.modeling_utils import QuantConfig
+from tensorrt_llm.quantization.mode import QuantAlgo
+
+quant_config = QuantConfig(
+    quant_algo=QuantAlgo.W8A16,  # INT8 weights, FP16 activations
+    kv_cache_quant_algo=QuantAlgo.INT8
+)
+```
+
+```python INT4 AWQ
+quant_config = QuantConfig(
+    quant_algo=QuantAlgo.W4A16_AWQ,
+    group_size=128
+)
+```
+
+```python SmoothQuant
+quant_config = QuantConfig(
+    quant_algo=QuantAlgo.W8A8_SQ_PER_CHANNEL,
+    smoothquant_val=0.5  # Alpha parameter
+)
+```
+</CodeGroup>
+
+### QuantConfig Parameters
+
+<ParamField path="quant_algo" type="QuantAlgo">
+  Quantization algorithm:
+  - `QuantAlgo.FP8` - FP8 quantization
+  - `QuantAlgo.W8A16` - INT8 weight-only
+  - `QuantAlgo.W4A16` - INT4 weight-only
+  - `QuantAlgo.W4A16_AWQ` - INT4 AWQ
+  - `QuantAlgo.W4A8_AWQ` - INT4 weights, INT8 activations (AWQ)
+  - `QuantAlgo.W8A8_SQ_PER_CHANNEL` - SmoothQuant per-channel
+  - `QuantAlgo.NVFP4` - NVIDIA FP4 format
+  - `QuantAlgo.MIXED_PRECISION` - Layer-wise mixed precision
+</ParamField>
+
+<ParamField path="kv_cache_quant_algo" type="QuantAlgo">
+  KV cache quantization (typically `QuantAlgo.FP8` or `QuantAlgo.INT8`)
+</ParamField>
+
+<ParamField path="group_size" type="int" default="128">
+  Group size for group-wise quantization (AWQ, GPTQ)
+</ParamField>
+
+<ParamField path="smoothquant_val" type="float" default="0.5">
+  SmoothQuant alpha parameter (0.0 to 1.0)
+</ParamField>
+
+<ParamField path="exclude_modules" type="List[str]">
+  Module name patterns to exclude from quantization (supports wildcards)
+  
+  Example: `["lm_head", "embed_tokens", "*.norm"]`
+</ParamField>
+
+<ParamField path="has_zero_point" type="bool" default="false">
+  Use zero-point quantization
+</ParamField>
+
+<ParamField path="clamp_val" type="List[float]">
+  Clamp values for FP8 rowwise quantization
+</ParamField>
+
+### Layer-Wise Quantization
+
+For mixed-precision quantization, use `LayerQuantConfig`:
+
+```python
+from tensorrt_llm.models.modeling_utils import LayerQuantConfig, QuantConfig
+from tensorrt_llm.quantization.mode import QuantAlgo
+
+layer_quant_config = LayerQuantConfig(
+    quant_algo=QuantAlgo.MIXED_PRECISION,
+    quantized_layers={
+        "model.layers.[0-15].*": QuantConfig(quant_algo=QuantAlgo.FP8),
+        "model.layers.[16-31].*": QuantConfig(quant_algo=QuantAlgo.W8A16),
+    }
+)
+```
+
+## Parallelism Configuration
+
+Control tensor and pipeline parallelism with the `Mapping` class:
+
+<CodeGroup>
+```python Tensor Parallelism
+from tensorrt_llm import LLM
+
+llm = LLM(
+    model="meta-llama/Meta-Llama-3.1-70B",
+    tensor_parallel_size=4  # Split across 4 GPUs
+)
+```
+
+```python Pipeline Parallelism
+llm = LLM(
+    model="meta-llama/Meta-Llama-3.1-70B",
+    pipeline_parallel_size=2  # Split layers across 2 stages
+)
+```
+
+```python Combined Parallelism
+llm = LLM(
+    model="meta-llama/Meta-Llama-3.1-70B",
+    tensor_parallel_size=4,
+    pipeline_parallel_size=2,  # Total: 8 GPUs
+    context_parallel_size=2    # Context parallelism
+)
+```
+
+```python Manual Mapping
+from tensorrt_llm.mapping import Mapping
+
+mapping = Mapping(
+    world_size=8,
+    rank=0,
+    tp_size=4,
+    pp_size=2,
+    cp_size=1
+)
+
+config = LLaMAConfig(
+    architecture="LlamaForCausalLM",
+    dtype="float16",
+    hidden_size=8192,
+    num_hidden_layers=80,
+    num_attention_heads=64,
+    mapping=mapping
+)
+```
+</CodeGroup>
+
+### Parallel Embedding
+
+<ParamField path="use_parallel_embedding" type="bool" default="false">
+  Enable embedding layer parallelism
+</ParamField>
+
+<ParamField path="embedding_sharding_dim" type="int" default="0">
+  Dimension to shard embeddings (0 for vocab dimension, 1 for hidden dimension)
+</ParamField>
+
+## Runtime Configuration
+
+Configure runtime behavior with `RuntimeDefaults`:
+
+```python
+from tensorrt_llm.bindings.executor import RuntimeDefaults
+from tensorrt_llm.models import LLaMAConfig
+
+runtime_defaults = RuntimeDefaults(
+    max_batch_size=256,
+    max_num_tokens=8192,
+    max_beam_width=4,
+    kv_cache_free_gpu_memory_fraction=0.9
+)
+
+config = LLaMAConfig(
+    architecture="LlamaForCausalLM",
+    dtype="float16",
+    hidden_size=4096,
+    num_hidden_layers=32,
+    num_attention_heads=32,
+    runtime_defaults=runtime_defaults
+)
+```
+
+## Model-Specific Configuration
+
+Different model families have specialized configuration classes with additional parameters:
+
+### LLaMA Configuration
+
+```python
+from tensorrt_llm.models import LLaMAConfig
+
+config = LLaMAConfig(
+    architecture="LlamaForCausalLM",
+    dtype="bfloat16",
+    hidden_size=4096,
+    num_hidden_layers=32,
+    num_attention_heads=32,
+    num_key_value_heads=8,  # GQA: 8 KV heads
+    intermediate_size=14336,
+    vocab_size=128256,
+    max_position_embeddings=131072,  # 128k context
+    rope_theta=500000.0,  # RoPE base frequency
+    rms_norm_eps=1e-5
+)
+```
+
+### Gemma Configuration
+
+```python
+from tensorrt_llm.models import GemmaConfig
+
+config = GemmaConfig(
+    architecture="GemmaForCausalLM",
+    dtype="bfloat16",
+    hidden_size=3072,
+    num_hidden_layers=28,
+    num_attention_heads=16,
+    num_key_value_heads=16,
+    head_dim=256,
+    hidden_activation="gelu_pytorch_tanh",
+    query_pre_attn_scalar=256,  # Gemma-specific
+    sliding_window=4096,  # Gemma 3
+    rope_local_base_freq=10000  # Gemma 3
+)
+```
+
+### GPT Configuration
+
+```python
+from tensorrt_llm.models import GPTConfig
+
+config = GPTConfig(
+    architecture="GPTForCausalLM",
+    dtype="float16",
+    hidden_size=768,
+    num_hidden_layers=12,
+    num_attention_heads=12,
+    vocab_size=50257,
+    max_position_embeddings=1024,
+    position_embedding_type="learned_absolute",
+    bias=True,  # GPT uses bias
+    apply_residual_connection_post_layernorm=False
+)
+```
+
+### DeepSeek Configuration
+
+```python
+config = DeepseekV2Config(
+    architecture="DeepseekV2ForCausalLM",
+    dtype="bfloat16",
+    hidden_size=5120,
+    num_hidden_layers=60,
+    num_attention_heads=128,
+    num_key_value_heads=8,  # MLA: Multi-head Latent Attention
+    qk_nope_head_dim=128,
+    qk_rope_head_dim=64,
+    v_head_dim=128,
+    moe_intermediate_size=1536,
+    n_routed_experts=160,
+    num_experts_per_tok=6,  # Top-6 routing
+    rope_theta=10000.0
+)
+```
+
+## Loading & Saving Configuration
+
+<CodeGroup>
+```python Load from JSON
+from tensorrt_llm.models import PretrainedConfig
+
+config = PretrainedConfig.from_json_file("config.json")
+```
+
+```python Load from Checkpoint
+config = PretrainedConfig.from_checkpoint("/path/to/checkpoint/")
+```
+
+```python Save to Dict
+config_dict = config.to_dict()
+```
+
+```python From HuggingFace
+from tensorrt_llm import LLM
+
+# Automatically loads config from HF model
+llm = LLM(model="meta-llama/Meta-Llama-3.1-8B")
+config = llm.config
+```
+</CodeGroup>
+
+## Configuration Best Practices
+
+<AccordionGroup>
+  <Accordion title="Data Type Selection" icon="database">
+    
+**FP16 vs BF16 vs FP8:**
+
+- `float16` - Best compatibility, good performance on most GPUs
+- `bfloat16` - Better numerical stability, recommended for training and large models (requires Ampere+)
+- `float8` - Highest performance on Hopper GPUs (H100, H200), requires calibration
+
+**Recommendations:**
+
+- Use `bfloat16` for models greater than 30B parameters
+- Use `float16` for smaller models or older GPUs
+- Use FP8 quantization on H100/H200 for maximum throughput
+
+</Accordion>
+
+  <Accordion title="Quantization Strategy" icon="compress">
+    
+**Model Size Guidelines:**
+
+- **< 7B**: FP16/BF16 (no quantization needed)
+- **7B - 13B**: W8A16 or FP8 for memory reduction
+- **30B - 70B**: FP8 or W4A16_AWQ for GPU memory constraints
+- **> 70B**: FP8 + tensor parallelism required
+
+**KV Cache Quantization:**
+
+- Always enable KV cache quantization for long context (greater than 8k tokens)
+- Use FP8 for minimal accuracy loss
+- Use INT8 for maximum memory savings
+
+</Accordion>
+
+  <Accordion title="Parallelism Strategy" icon="server">
+    
+**Tensor Parallelism (TP):**
+- Use powers of 2: 2, 4, 8 GPUs
+- Required when model doesn't fit on single GPU
+- Communication overhead increases with TP size
+
+**Pipeline Parallelism (PP):**
+- Use when TP is insufficient
+- Minimize pipeline stages (higher latency per stage)
+- Best for offline batch inference
+
+**Context Parallelism (CP):**
+- Use for very long context windows (> 32k tokens)
+- Splits attention computation across sequence dimension
+
+</Accordion>
+
+  <Accordion title="Context Length Optimization" icon="arrows-left-right">
+    
+**RoPE Scaling:**
+
+For extending context beyond training length:
+
+```python
+config = LLaMAConfig(
+    max_position_embeddings=32768,
+    rope_theta=500000.0,  # Increase for longer context
+    rope_scaling={
+        "type": "linear",
+        "factor": 2.0  # 2x context extension
+    }
+)
+```
+
+**Memory Considerations:**
+- KV cache grows linearly with sequence length
+- Enable KV cache quantization for long context
+- Use paged attention for variable-length batches
+
+</Accordion>
+</AccordionGroup>
+
+## Configuration Examples
+
+<CardGroup cols={2}>
+  <Card title="Production Serving" icon="server">
+    ```python
+    config = LLaMAConfig(
+        dtype="bfloat16",
+        hidden_size=8192,
+        num_hidden_layers=80,
+        num_attention_heads=64,
+        num_key_value_heads=8,
+        quantization=QuantConfig(
+            quant_algo=QuantAlgo.FP8,
+            kv_cache_quant_algo=QuantAlgo.FP8
+        ),
+        runtime_defaults=RuntimeDefaults(
+            max_batch_size=512,
+            kv_cache_free_gpu_memory_fraction=0.95
+        )
+    )
+    ```
+  </Card>
+
+  <Card title="Memory-Constrained" icon="memory">
+    ```python
+    config = LLaMAConfig(
+        dtype="float16",
+        hidden_size=4096,
+        num_hidden_layers=32,
+        num_attention_heads=32,
+        quantization=QuantConfig(
+            quant_algo=QuantAlgo.W4A16_AWQ,
+            kv_cache_quant_algo=QuantAlgo.INT8,
+            group_size=128
+        )
+    )
+    ```
+  </Card>
+</CardGroup>
+
+## Next Steps
+
+<CardGroup cols={3}>
+  <Card title="Quantization Guide" icon="compress" href="/features/quantization">
+    Deep dive into quantization techniques
+  </Card>
+  <Card title="Custom Models" icon="code" href="/models/custom-models">
+    Implement custom architectures
+  </Card>
+  <Card title="Deployment" icon="rocket" href="/deployment-guide/overview">
+    Deploy configured models
+  </Card>
+</CardGroup>

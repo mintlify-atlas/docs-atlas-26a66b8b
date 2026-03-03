@@ -1,0 +1,147 @@
+---
+title: 'AutoDeploy Backend'
+description: 'Beta backend for seamless PyTorch to TensorRT-LLM deployment'
+---
+
+## Overview
+
+AutoDeploy is a beta backend designed to simplify and accelerate the deployment of PyTorch models, including off-the-shelf models from Hugging Face Transformers, to TensorRT-LLM. It provides an alternative deployment method using the LLM API without requiring code changes to the source model or manual implementation of inference optimizations.
+
+<Warning>
+  This feature is under active development and currently released as beta. The code is subject to change and may include backward-incompatible updates.
+</Warning>
+
+## How It Works
+
+AutoDeploy extracts a computation graph from the source model and applies inference optimizations through a series of automated graph transformations. Instead of manually implementing optimizations like KV-caches, multi-GPU parallelism, or quantization, AutoDeploy generates an inference-optimized graph that executes directly in the TensorRT-LLM PyTorch runtime.
+
+### Architecture
+
+The AutoDeploy workflow follows this pipeline:
+
+1. **PyTorch Model**: Start with a standard PyTorch or Hugging Face model
+2. **torch.export**: Export using `torch.export` to generate a standard Torch graph containing core PyTorch ATen operations alongside custom attention operations
+3. **Graph Transformations**: Apply automated transformations including:
+   - Graph sharding
+   - KV-cache insertion
+   - GEMM fusion
+   - MHA (Multi-Head Attention) fusion
+   - CudaGraph optimization
+4. **Compilation**: Compile using supported compile backends like `torch-opt`
+5. **Runtime Deployment**: Deploy via TensorRT-LLM runtime with in-flight batching, paging, and overlap scheduling
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card title="Seamless Translation" icon="shuffle">
+    Automatically converts PyTorch/Hugging Face models to TensorRT-LLM without manual rewrites
+  </Card>
+  <Card title="Unified Model Definition" icon="file-code">
+    Maintain a single source of truth with your original PyTorch/Hugging Face model
+  </Card>
+  <Card title="Optimized Inference" icon="gauge-high">
+    Built-in transformations for sharding, quantization, KV-cache integration, and fusion
+  </Card>
+  <Card title="Day-0 Support" icon="rocket">
+    Immediate deployment for models with continuous performance enhancements
+  </Card>
+</CardGroup>
+
+## Installation
+
+AutoDeploy is included with the TensorRT-LLM installation:
+
+```bash
+sudo apt-get -y install libopenmpi-dev && \
+pip3 install --upgrade pip setuptools && \
+pip3 install tensorrt_llm
+```
+
+See the [installation guide](/installation/linux) for more details.
+
+## Quick Start
+
+### Using the LLM API
+
+The AutoDeploy backend can be used by specifying `backend="_autodeploy"` in the LLM API:
+
+```python
+from tensorrt_llm import LLM
+
+# Initialize with AutoDeploy backend
+llm = LLM(
+    model="TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+    backend="_autodeploy"
+)
+
+# Generate text
+output = llm.generate("The future of AI is")
+print(output)
+```
+
+### Running the Demo Script
+
+The general entry point for running AutoDeploy demos is the `build_and_run_ad.py` script:
+
+```bash
+cd examples/auto_deploy
+python build_and_run_ad.py --model "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+```
+
+Checkpoints are loaded directly from Hugging Face or a local HF-like directory.
+
+## torch.export Usage
+
+AutoDeploy uses PyTorch's `torch.export` API to capture the model's computation graph. This process:
+
+- Generates a standard Torch graph with core PyTorch ATen operations
+- Includes custom attention operations based on the attention backend specified in configuration
+- Creates an exportable representation that can undergo automated transformations
+
+The attention backend is determined by the configuration, allowing flexibility in how attention operations are implemented in the exported graph.
+
+## Configuration
+
+AutoDeploy can be configured through the standard LLM API configuration options. The backend automatically determines:
+
+- Attention backend for the exported graph
+- Parallelism strategies (tensor/pipeline parallelism)
+- Quantization settings
+- KV-cache architecture
+
+See [expert configurations](https://github.com/NVIDIA/TensorRT-LLM/blob/main/docs/source/features/auto_deploy/advanced/expert_configurations.md) for advanced tuning options.
+
+## Roadmap
+
+### Upcoming Model Support
+
+- Vision-Language Models (VLMs)
+- Structured State Space Models (SSMs) and Linear Attention architectures
+
+### Planned Features
+
+- Low-Rank Adaptation (LoRA)
+- Speculative Decoding for accelerated generation
+
+Track development progress on the [GitHub Project Board](https://github.com/orgs/NVIDIA/projects/83/views/13).
+
+## Advanced Topics
+
+For more advanced usage:
+
+- [Example Run Script](https://github.com/NVIDIA/TensorRT-LLM/blob/main/docs/source/features/auto_deploy/advanced/example_run.md)
+- [Logging Configuration](https://github.com/NVIDIA/TensorRT-LLM/blob/main/docs/source/features/auto_deploy/advanced/logging.md)
+- [Workflow Integration](https://github.com/NVIDIA/TensorRT-LLM/blob/main/docs/source/features/auto_deploy/advanced/workflow.md)
+- [Performance Benchmarking](https://github.com/NVIDIA/TensorRT-LLM/blob/main/docs/source/features/auto_deploy/advanced/benchmarking_with_trtllm_bench.md)
+- [KV Cache Architecture](https://github.com/NVIDIA/TensorRT-LLM/blob/main/docs/source/features/auto_deploy/advanced/kv_cache_architecture.md)
+- [Export ONNX for EdgeLLM](https://github.com/NVIDIA/TensorRT-LLM/blob/main/docs/source/features/auto_deploy/advanced/export_onnx.md)
+
+## Contributing
+
+We welcome community contributions! See `examples/auto_deploy/CONTRIBUTING.md` for guidelines.
+
+## Related Pages
+
+- [Support Matrix](/features/support-matrix)
+- [PyTorch Backend](/developer/pytorch-backend)
+- [Performance Benchmarking](/developer/benchmarking)

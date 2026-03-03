@@ -1,0 +1,358 @@
+---
+title: trtllm-build
+description: Build optimized TensorRT engines from model checkpoints
+---
+
+Build optimized TensorRT engines from model checkpoints for high-performance inference. This command compiles model checkpoints into TensorRT engines with various optimization options.
+
+## Usage
+
+```bash
+trtllm-build [OPTIONS]
+```
+
+## Input Options
+
+<ParamField path="--checkpoint_dir" type="string">
+  The directory path that contains TensorRT-LLM checkpoint
+</ParamField>
+
+<ParamField path="--model_config" type="string">
+  The file path that saves TensorRT-LLM checkpoint config
+</ParamField>
+
+<ParamField path="--build_config" type="string">
+  The file path that saves TensorRT-LLM build config
+</ParamField>
+
+<ParamField path="--model_cls_file" type="string">
+  The file path that defines customized TensorRT-LLM model
+</ParamField>
+
+<ParamField path="--model_cls_name" type="string">
+  The customized TensorRT-LLM model class name
+</ParamField>
+
+## Output Options
+
+<ParamField path="--output_dir" type="string" default="engine_outputs">
+  The directory path to save the serialized engine files and engine config file
+</ParamField>
+
+## Engine Configuration
+
+<ParamField path="--max_batch_size" type="integer" default="8">
+  Maximum number of requests that the engine can schedule
+</ParamField>
+
+<ParamField path="--max_input_len" type="integer" default="1024">
+  Maximum input length of one request
+</ParamField>
+
+<ParamField path="--max_seq_len" type="integer">
+  Maximum total length of one request, including prompt and outputs. If unspecified, the value is deduced from the model config. Alias: `--max_decoder_seq_len`
+</ParamField>
+
+<ParamField path="--max_beam_width" type="integer" default="1">
+  Maximum number of beams for beam search decoding
+</ParamField>
+
+<ParamField path="--max_num_tokens" type="integer" default="2048">
+  Maximum number of batched input tokens after padding is removed in each batch. Currently, the input padding is removed by default
+</ParamField>
+
+<ParamField path="--opt_num_tokens" type="integer">
+  Optimal number of batched input tokens after padding is removed in each batch. It equals to `max_batch_size * max_beam_width` by default. Set this value as close as possible to the actual number of tokens on your workload
+</ParamField>
+
+<ParamField path="--max_encoder_input_len" type="integer" default="1024">
+  Maximum encoder input length for encoder-decoder models. Set `max_input_len` to 1 to start generation from decoder_start_token_id of length 1
+</ParamField>
+
+<ParamField path="--max_prompt_embedding_table_size" type="integer" default="0">
+  Maximum prompt embedding table size for prompt tuning, or maximum multimodal input size for multimodal models. Setting a value > 0 enables prompt tuning or multimodal input. Alias: `--max_multimodal_len`
+</ParamField>
+
+## KV Cache Options
+
+<ParamField path="--kv_cache_type" type="string">
+  Set KV cache type. Choices: `continuous`, `paged`, `disabled`. For disabled case, KV cache is disabled and only context phase is allowed
+</ParamField>
+
+<ParamField path="--paged_kv_cache" type="string">
+  Deprecated. Enabling this option is equivalent to `--kv_cache_type paged` for transformer based models
+</ParamField>
+
+## Build Optimization
+
+<ParamField path="--input_timing_cache" type="string">
+  The file path to read the timing cache. This option is ignored if the file does not exist
+</ParamField>
+
+<ParamField path="--output_timing_cache" type="string">
+  The file path to write the timing cache
+</ParamField>
+
+<ParamField path="--profiling_verbosity" type="string" default="layer_names_only">
+  The profiling verbosity for the generated TensorRT engine. Setting to detailed allows inspecting tactic choices and kernel parameters. Choices: `layer_names_only`, `detailed`, `none`
+</ParamField>
+
+<ParamField path="--strip_plan" type="boolean" default="false">
+  Enable stripping weights from the final TensorRT engine under the assumption that the refit weights are identical to those provided at build time
+</ParamField>
+
+<ParamField path="--weight_sparsity" type="boolean" default="false">
+  Enable weight sparsity
+</ParamField>
+
+<ParamField path="--weight_streaming" type="boolean" default="false">
+  Enable offloading weights to CPU and streaming loading at runtime
+</ParamField>
+
+<ParamField path="--fast_build" type="boolean" default="false">
+  Enable features for faster engine building. This may cause some performance degradation and is currently incompatible with int8/int4 quantization without plugin
+</ParamField>
+
+## Build Process Control
+
+<ParamField path="--workers" type="integer" default="1">
+  The number of workers for building in parallel
+</ParamField>
+
+<ParamField path="--log_level" type="string" default="info">
+  The logging level. Choices: `verbose`, `info`, `warning`, `error`, `internal_error`
+</ParamField>
+
+<ParamField path="--enable_debug_output" type="boolean" default="false">
+  Enable debug output
+</ParamField>
+
+<ParamField path="--visualize_network" type="string">
+  The directory path to export TensorRT Network as ONNX prior to Engine build for debugging
+</ParamField>
+
+<ParamField path="--dry_run" type="boolean" default="false">
+  Run through the build process except the actual Engine build for debugging
+</ParamField>
+
+<ParamField path="--monitor_memory" type="boolean" default="false">
+  Enable memory monitor during Engine build
+</ParamField>
+
+## Logits Options
+
+<ParamField path="--logits_dtype" type="string">
+  The data type of logits. Choices: `float16`, `float32`
+</ParamField>
+
+<ParamField path="--gather_context_logits" type="boolean" default="false">
+  Enable gathering context logits
+</ParamField>
+
+<ParamField path="--gather_generation_logits" type="boolean" default="false">
+  Enable gathering generation logits (deprecated, use runtime flag instead)
+</ParamField>
+
+<ParamField path="--gather_all_token_logits" type="boolean" default="false">
+  Enable both `gather_context_logits` and `gather_generation_logits`
+</ParamField>
+
+## LoRA Options
+
+<ParamField path="--lora_dir" type="string" multiple>
+  The directory of LoRA weights. If multiple directories are provided, the first one is used for configuration
+</ParamField>
+
+<ParamField path="--lora_ckpt_source" type="string" default="hf">
+  The source type of LoRA checkpoint. Choices: `hf`, `nemo`
+</ParamField>
+
+<ParamField path="--lora_target_modules" type="string" multiple>
+  The target module names that LoRA is applied. Only effective when `lora_plugin` is enabled. Choices: `attn_qkv`, `attn_q`, `attn_k`, `attn_v`, `attn_dense`, `mlp_h_to_4h`, `mlp_4h_to_h`, `mlp_gate`, `cross_attn_qkv`, `cross_attn_q`, `cross_attn_k`, `cross_attn_v`, `cross_attn_dense`, `moe_h_to_4h`, `moe_4h_to_h`, `moe_gate`, `moe_router`
+</ParamField>
+
+<ParamField path="--max_lora_rank" type="integer" default="64">
+  Maximum LoRA rank for different LoRA modules. It is used to compute the workspace size of LoRA plugin
+</ParamField>
+
+## Speculative Decoding Options
+
+<ParamField path="--speculative_decoding_mode" type="string">
+  Mode of speculative decoding. Choices: `draft_tokens_external`, `lookahead_decoding`, `medusa`, `explicit_draft_tokens`, `eagle`
+</ParamField>
+
+<ParamField path="--max_draft_len" type="integer" default="0">
+  Maximum lengths of draft tokens for speculative decoding target model
+</ParamField>
+
+## Plugin Configuration
+
+The build command supports various plugin configuration options. Use `--help` to see the full list of plugin options including:
+
+- `--gpt_attention_plugin`
+- `--gemm_plugin`
+- `--lora_plugin`
+- `--context_fmha`
+- `--remove_input_padding`
+- And many more
+
+## Examples
+
+### Basic Engine Build
+
+Build a basic TensorRT engine from a checkpoint:
+
+```bash
+trtllm-build --checkpoint_dir ./model_checkpoint \
+  --output_dir ./engine_outputs
+```
+
+### Custom Batch and Sequence Length
+
+Build with specific batch size and sequence length limits:
+
+```bash
+trtllm-build --checkpoint_dir ./model_checkpoint \
+  --output_dir ./engine_outputs \
+  --max_batch_size 64 \
+  --max_input_len 2048 \
+  --max_seq_len 4096
+```
+
+### Parallel Build
+
+Build with multiple workers for faster compilation:
+
+```bash
+trtllm-build --checkpoint_dir ./model_checkpoint \
+  --output_dir ./engine_outputs \
+  --workers 4
+```
+
+### Enable Weight Sparsity
+
+Build with weight sparsity optimization:
+
+```bash
+trtllm-build --checkpoint_dir ./model_checkpoint \
+  --output_dir ./engine_outputs \
+  --weight_sparsity
+```
+
+### Build with Timing Cache
+
+Use timing cache for faster subsequent builds:
+
+```bash
+trtllm-build --checkpoint_dir ./model_checkpoint \
+  --output_dir ./engine_outputs \
+  --input_timing_cache ./timing_cache.bin \
+  --output_timing_cache ./timing_cache.bin
+```
+
+### Enable LoRA Support
+
+Build engine with LoRA adapter support:
+
+```bash
+trtllm-build --checkpoint_dir ./model_checkpoint \
+  --output_dir ./engine_outputs \
+  --lora_dir ./lora_weights \
+  --max_lora_rank 64 \
+  --lora_target_modules attn_qkv attn_dense mlp_h_to_4h mlp_4h_to_h
+```
+
+### Fast Build Mode
+
+Enable fast build for quicker iteration during development:
+
+```bash
+trtllm-build --checkpoint_dir ./model_checkpoint \
+  --output_dir ./engine_outputs \
+  --fast_build
+```
+
+### Build with Speculative Decoding
+
+Enable Medusa speculative decoding:
+
+```bash
+trtllm-build --checkpoint_dir ./model_checkpoint \
+  --output_dir ./engine_outputs \
+  --speculative_decoding_mode medusa \
+  --max_draft_len 5
+```
+
+### Build for Multimodal Models
+
+Build engine for vision-language models:
+
+```bash
+trtllm-build --checkpoint_dir ./vlm_checkpoint \
+  --output_dir ./engine_outputs \
+  --max_prompt_embedding_table_size 4096 \
+  --max_batch_size 16
+```
+
+### Detailed Profiling
+
+Build with detailed profiling information:
+
+```bash
+trtllm-build --checkpoint_dir ./model_checkpoint \
+  --output_dir ./engine_outputs \
+  --profiling_verbosity detailed
+```
+
+### Debug Build
+
+Build with debugging and visualization:
+
+```bash
+trtllm-build --checkpoint_dir ./model_checkpoint \
+  --output_dir ./engine_outputs \
+  --enable_debug_output \
+  --visualize_network ./network_visualization \
+  --monitor_memory
+```
+
+### Build from Model Config
+
+Build using separate model and build config files:
+
+```bash
+trtllm-build --model_config ./model_config.json \
+  --build_config ./build_config.json \
+  --output_dir ./engine_outputs
+```
+
+## Build Process
+
+The build process involves:
+
+1. **Loading checkpoint** - Reads model weights and configuration
+2. **Network construction** - Builds TensorRT network with optimizations
+3. **Engine compilation** - Compiles network into optimized TensorRT engine
+4. **Serialization** - Saves engine files to output directory
+
+## Output Files
+
+The `--output_dir` will contain:
+
+- `rank*.engine` - Serialized TensorRT engines (one per GPU rank)
+- `config.json` - Engine configuration
+- Timing cache (if `--output_timing_cache` is specified)
+
+## Performance Tips
+
+- Use `--workers` to parallelize builds across multiple GPUs
+- Enable `--weight_sparsity` for sparse models
+- Use timing cache for faster subsequent builds
+- Set `--max_batch_size` and `--max_num_tokens` based on your workload
+- Enable `--fast_build` during development, disable for production
+
+## Related Commands
+
+- [trtllm-serve](/cli/trtllm-serve) - Serve the built engines
+- [trtllm-bench](/cli/trtllm-bench) - Benchmark engine performance
+- [trtllm-eval](/cli/trtllm-eval) - Evaluate model accuracy

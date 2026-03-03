@@ -1,0 +1,258 @@
+---
+title: Quantization
+description: Reduce memory footprint and accelerate inference with FP8, FP4, INT4, and INT8 quantization techniques
+---
+
+Quantization is a technique used to reduce memory footprint and computational cost by converting the model's weights and activations from high-precision floating-point numbers (like BF16) to lower-precision data types, such as INT8, FP8, or FP4.
+
+TensorRT-LLM offers a variety of quantization recipes to optimize LLM inference, supporting both weight-only and weight-activation quantization methods.
+
+## Quantization Methods
+
+TensorRT-LLM supports the following quantization recipes:
+
+<CardGroup cols={2}>
+  <Card title="FP8 Quantization" icon="cube">
+    - FP8 Per Tensor
+    - FP8 Block Scaling
+    - FP8 Rowwise
+    - FP8 KV Cache
+  </Card>
+  
+  <Card title="FP4 Quantization" icon="cube">
+    - NVFP4 (NVIDIA FP4)
+    - MXFP4 (MX Format FP4)
+    - NVFP4 KV Cache
+  </Card>
+  
+  <Card title="INT4 Quantization" icon="cube">
+    - W4A16 AWQ
+    - W4A8 AWQ
+    - W4A16 GPTQ
+    - W4A8 GPTQ
+  </Card>
+  
+  <Card title="INT8 Quantization" icon="cube">
+    - W8A16 Weight-Only
+    - W8A8 SmoothQuant
+    - INT8 KV Cache
+  </Card>
+</CardGroup>
+
+## Quick Start
+
+### Running Pre-Quantized Models
+
+The simplest way to use quantization is to load pre-quantized models from the [NVIDIA Model Optimizer collection](https://huggingface.co/collections/nvidia/model-optimizer-66aa84f7966b3150262481a4):
+
+```python
+from tensorrt_llm import LLM
+
+# Load an FP8-quantized model directly
+llm = LLM(model='nvidia/Llama-3.1-8B-Instruct-FP8')
+outputs = llm.generate("Hello, my name is")
+```
+
+<Note>
+TensorRT-LLM can directly run pre-quantized models without any additional configuration. The quantization settings are automatically detected from the checkpoint.
+</Note>
+
+### FP8 KV Cache
+
+You can enable FP8 KV cache manually, even for checkpoints that don't have it enabled by default:
+
+```python
+from tensorrt_llm import LLM
+from tensorrt_llm.llmapi import KvCacheConfig
+
+llm = LLM(
+    model='/path/to/model',
+    kv_cache_config=KvCacheConfig(dtype='fp8')
+)
+outputs = llm.generate("Hello, my name is")
+```
+
+### NVFP4 KV Cache
+
+<Warning>
+NVFP4 KV cache requires offline quantization with ModelOpt. See the [Offline Quantization](#offline-quantization-with-modelopt) section below.
+</Warning>
+
+```python
+from tensorrt_llm import LLM
+from tensorrt_llm.llmapi import KvCacheConfig
+
+llm = LLM(
+    model='/path/to/model',
+    kv_cache_config=KvCacheConfig(dtype='nvfp4')
+)
+outputs = llm.generate("Hello, my name is")
+```
+
+## Offline Quantization with ModelOpt
+
+If a pre-quantized model is not available on HuggingFace, you can quantize it offline using [NVIDIA Model Optimizer](https://github.com/NVIDIA/Model-Optimizer).
+
+### FP8 Quantization
+
+```bash
+git clone https://github.com/NVIDIA/Model-Optimizer.git
+cd Model-Optimizer/examples/llm_ptq
+scripts/huggingface_example.sh --model <huggingface_model_card> --quant fp8
+```
+
+### NVFP4 KV Cache Quantization
+
+```bash
+git clone https://github.com/NVIDIA/Model-Optimizer.git
+cd Model-Optimizer/examples/llm_ptq
+scripts/huggingface_example.sh --model <huggingface_model_card> --quant fp8 --kv_cache_quant nvfp4
+```
+
+<Info>
+Currently, TensorRT-LLM only supports FP8 weight/activation quantization when NVFP4 KV cache is enabled. Therefore, `--quant fp8` is required.
+</Info>
+
+## Hardware Support Matrix
+
+| GPU Architecture | NVFP4 | MXFP4 | FP8 (per tensor) | FP8 (block scaling) | FP8 (rowwise) | FP8 KV Cache | NVFP4 KV Cache | W4A8 AWQ | W4A16 AWQ | W4A8 GPTQ | W4A16 GPTQ |
+|-----------------|:-----:|:-----:|:----------------:|:-------------------:|:-------------:|:------------:|:--------------:|:--------:|:---------:|:---------:|:----------:|
+| Blackwell (sm120) | ✓ | ✓ | ✓ | - | - | ✓ | - | - | - | - | - |
+| Blackwell (sm100/103) | ✓ | ✓ | ✓ | ✓ | - | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Hopper | - | - | ✓ | ✓ | ✓ | ✓ | - | ✓ | ✓ | ✓ | ✓ |
+| Ada Lovelace | - | - | ✓ | - | - | ✓ | - | ✓ | ✓ | ✓ | ✓ |
+| Ampere | - | - | - | - | - | ✓ | - | - | ✓ | - | ✓ |
+
+<Note>
+FP8 blockwise scaling GEMM kernels for sm100/103 use the MXFP8 recipe (E4M3 act/weight and UE8M0 act/weight scale), which differs from SM90's FP8 recipe (E4M3 act/weight and FP32 act/weight scale).
+</Note>
+
+## Model Support Matrix
+
+Quantization support varies by model architecture. Here are some examples:
+
+<Tabs>
+  <Tab title="LLaMA Models">
+    | Model | NVFP4 | FP8 | FP8 KV Cache | W4A16 AWQ | W4A16 GPTQ |
+    |-------|:-----:|:---:|:------------:|:---------:|:----------:|
+    | LLaMA | ✓ | ✓ | ✓ | - | ✓ |
+    | LLaMA-v2 | ✓ | ✓ | ✓ | ✓ | ✓ |
+    | LLaMA 3 | - | - | ✓ | ✓ | - |
+    | LLaMA 4 | ✓ | ✓ | ✓ | - | - |
+  </Tab>
+  
+  <Tab title="Qwen Models">
+    | Model | NVFP4 | FP8 | FP8 KV Cache | W4A16 AWQ | W4A16 GPTQ |
+    |-------|:-----:|:---:|:------------:|:---------:|:----------:|
+    | Qwen | - | - | ✓ | ✓ | ✓ |
+    | Qwen-2/2.5 | ✓ | ✓ | ✓ | ✓ | ✓ |
+    | Qwen-3 | ✓ | ✓ | ✓ | ✓ | ✓ |
+  </Tab>
+  
+  <Tab title="Other Models">
+    | Model | NVFP4 | FP8 | FP8 KV Cache | W4A16 AWQ | W4A16 GPTQ |
+    |-------|:-----:|:---:|:------------:|:---------:|:----------:|
+    | Mistral | - | ✓ | ✓ | - | - |
+    | Mixtral | ✓ | ✓ | ✓ | - | - |
+    | DeepSeek-R1 | ✓ | ✓ (block scaling) | ✓ | - | - |
+    | Gemma 3 | - | ✓ | ✓ | ✓ | - |
+  </Tab>
+</Tabs>
+
+<Note>
+For multimodal models (BLIP2, LLaVA, VILA, Nougat), the vision component uses FP16 by default. The language component determines which quantization methods are supported.
+</Note>
+
+## Quantization Techniques
+
+### AWQ (Activation-aware Weight Quantization)
+
+AWQ quantizes weights to 4-bit while preserving activation-aware importance:
+
+- **W4A16 AWQ**: 4-bit weights, 16-bit activations
+- **W4A8 AWQ**: 4-bit weights, 8-bit activations
+- Per-group quantization for better accuracy
+- Minimal accuracy loss compared to FP16
+
+### SmoothQuant
+
+SmoothQuant balances quantization difficulty between weights and activations:
+
+- W8A8 quantization (8-bit weights and activations)
+- Per-channel or per-tensor scaling
+- Dynamic per-token quantization option
+- Better accuracy than naive INT8 quantization
+
+### GPTQ (Generative Pre-trained Transformer Quantization)
+
+GPTQ is a one-shot weight quantization method:
+
+- **W4A16 GPTQ**: 4-bit weights, 16-bit activations
+- **W4A8 GPTQ**: 4-bit weights, 8-bit activations
+- Per-group quantization
+- Layer-wise quantization for optimal accuracy
+
+## Python API Reference
+
+```python
+from tensorrt_llm.quantization.mode import QuantAlgo, QuantMode
+
+# Available quantization algorithms
+quant_algos = [
+    QuantAlgo.FP8,                    # FP8 per-tensor
+    QuantAlgo.FP8_PER_CHANNEL_PER_TOKEN,  # FP8 rowwise
+    QuantAlgo.FP8_BLOCK_SCALES,       # FP8 block scaling
+    QuantAlgo.NVFP4,                  # NVFP4
+    QuantAlgo.W4A16_AWQ,              # AWQ 4-bit weights, 16-bit acts
+    QuantAlgo.W4A8_AWQ,               # AWQ 4-bit weights, 8-bit acts
+    QuantAlgo.W4A16_GPTQ,             # GPTQ 4-bit weights, 16-bit acts
+    QuantAlgo.W8A8_SQ_PER_CHANNEL,    # SmoothQuant per-channel
+]
+
+# Create QuantMode from algorithm
+quant_mode = QuantMode.from_quant_algo(
+    quant_algo=QuantAlgo.FP8,
+    kv_cache_quant_algo=QuantAlgo.FP8
+)
+```
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Choosing the Right Quantization Method">
+    - **For maximum throughput**: FP8 quantization on Hopper/Blackwell GPUs
+    - **For memory-constrained scenarios**: W4A16 AWQ or GPTQ
+    - **For balanced performance**: W4A8 AWQ with FP8 KV cache
+    - **For minimal accuracy loss**: FP8 per-tensor or SmoothQuant
+  </Accordion>
+  
+  <Accordion title="KV Cache Quantization">
+    - FP8 KV cache reduces memory usage by 2x vs FP16
+    - NVFP4 KV cache reduces memory usage by 4x vs FP16
+    - Minimal impact on generation quality
+    - Essential for long-context applications
+  </Accordion>
+  
+  <Accordion title="Performance Tuning">
+    - FP8 quantization provides best performance on Hopper+ GPUs
+    - Use pre-quantized models when available (faster loading)
+    - Enable KV cache quantization for long sequences
+    - Test accuracy on your specific tasks before deployment
+  </Accordion>
+</AccordionGroup>
+
+## Additional Resources
+
+<CardGroup cols={2}>
+  <Card title="Pre-quantized Models" icon="huggingface" href="https://huggingface.co/collections/nvidia/model-optimizer-66aa84f7966b3150262481a4">
+    Browse NVIDIA's collection of pre-quantized models
+  </Card>
+  
+  <Card title="Model Optimizer" icon="github" href="https://github.com/NVIDIA/Model-Optimizer">
+    Quantize your own models with NVIDIA Model Optimizer
+  </Card>
+  
+  <Card title="ModelOpt Support Matrix" icon="book" href="https://nvidia.github.io/Model-Optimizer/guides/0_support_matrix.html">
+    Check which models and quantization methods are supported
+  </Card>
+</CardGroup>

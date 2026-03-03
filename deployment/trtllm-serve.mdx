@@ -1,0 +1,381 @@
+---
+title: 'OpenAI-Compatible Server'
+description: 'Deploy TensorRT-LLM with trtllm-serve for production inference'
+---
+
+## Overview
+
+The `trtllm-serve` command starts an OpenAI-compatible server that supports REST and gRPC endpoints. It provides the simplest way to deploy TensorRT-LLM models in production with minimal configuration.
+
+<Note>
+  `trtllm-serve` supports all three backends: **PyTorch** (default), **TensorRT**, and **AutoDeploy**.
+</Note>
+
+## Quick Start
+
+Start a server with a HuggingFace model:
+
+```bash
+trtllm-serve TinyLlama/TinyLlama-1.1B-Chat-v1.0
+```
+
+The server will start on `localhost:8000` by default.
+
+## Command-Line Options
+
+### Basic Configuration
+
+```bash
+trtllm-serve <model> \
+  --host localhost \
+  --port 8000 \
+  --backend pytorch \
+  --tp_size 2 \
+  --max_batch_size 128 \
+  --max_num_tokens 8192
+```
+
+<ParamField path="model" type="string" required>
+  Model path or HuggingFace model name (e.g., `meta-llama/Llama-3.1-8B-Instruct`)
+</ParamField>
+
+<ParamField path="--host" type="string" default="localhost">
+  Server hostname
+</ParamField>
+
+<ParamField path="--port" type="int" default="8000">
+  Server port
+</ParamField>
+
+<ParamField path="--backend" type="string" default="pytorch">
+  Inference backend: `pytorch`, `tensorrt`, or `_autodeploy`
+</ParamField>
+
+### Parallelism Configuration
+
+<ParamField path="--tp_size" type="int" default="1">
+  Tensor parallelism size (split model across GPUs)
+</ParamField>
+
+<ParamField path="--pp_size" type="int" default="1">
+  Pipeline parallelism size (split layers across GPUs)
+</ParamField>
+
+<ParamField path="--ep_size" type="int">
+  Expert parallelism size for MoE models
+</ParamField>
+
+### Performance Tuning
+
+<ParamField path="--max_batch_size" type="int" default="256">
+  Maximum number of concurrent requests
+</ParamField>
+
+<ParamField path="--max_num_tokens" type="int" default="8192">
+  Maximum tokens across all requests in a batch
+</ParamField>
+
+<ParamField path="--max_seq_len" type="int">
+  Maximum sequence length (prompt + generation). Auto-detected from model config if not specified.
+</ParamField>
+
+<ParamField path="--free_gpu_memory_fraction" type="float" default="0.9">
+  Fraction of GPU memory to use for KV cache
+</ParamField>
+
+## OpenAI-Compatible Endpoints
+
+The server exposes these OpenAI-compatible endpoints:
+
+### Chat Completions
+
+<CodeGroup>
+
+```bash cURL
+curl http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "TinyLlama-1.1B-Chat-v1.0",
+    "messages": [
+      {"role": "system", "content": "You are a helpful assistant."},
+      {"role": "user", "content": "Where is New York?"}
+    ],
+    "max_tokens": 128,
+    "temperature": 0.7
+  }'
+```
+
+```python Python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:8000/v1",
+    api_key="EMPTY"  # Not required for local server
+)
+
+response = client.chat.completions.create(
+    model="TinyLlama-1.1B-Chat-v1.0",
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Where is New York?"}
+    ],
+    max_tokens=128,
+    temperature=0.7
+)
+
+print(response.choices[0].message.content)
+```
+
+</CodeGroup>
+
+### Text Completions
+
+```bash
+curl http://localhost:8000/v1/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "TinyLlama-1.1B-Chat-v1.0",
+    "prompt": "The capital of France is",
+    "max_tokens": 64,
+    "temperature": 0
+  }'
+```
+
+### Streaming Responses
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="EMPTY")
+
+stream = client.chat.completions.create(
+    model="TinyLlama-1.1B-Chat-v1.0",
+    messages=[{"role": "user", "content": "Tell me a story"}],
+    max_tokens=512,
+    stream=True
+)
+
+for chunk in stream:
+    if chunk.choices[0].delta.content:
+        print(chunk.choices[0].delta.content, end="", flush=True)
+```
+
+## Advanced Configuration with YAML
+
+For complex configurations, use a YAML file with `--config`:
+
+```yaml config.yaml
+max_batch_size: 128
+max_num_tokens: 8192
+
+kv_cache_config:
+  free_gpu_memory_fraction: 0.95
+  enable_block_reuse: true
+  dtype: fp8
+
+pytorch_backend_config:
+  enable_overlap_scheduler: true
+
+moe_config:
+  backend: CUTLASS
+
+cuda_graph_config:
+  enable_padding: true
+  batch_sizes: [1, 2, 4, 8, 16, 32]
+```
+
+Start the server with the config:
+
+```bash
+trtllm-serve meta-llama/Llama-3.1-8B-Instruct --config config.yaml
+```
+
+<Tip>
+  The YAML file mirrors the structure of [`TorchLlmArgs`](https://nvidia.github.io/TensorRT-LLM/llm-api/reference.html#tensorrt_llm.llmapi.TorchLlmArgs). All nested configuration classes can be specified.
+</Tip>
+
+## Multi-Node Deployment with Slurm
+
+Deploy large models across multiple nodes using Slurm:
+
+```bash
+cat > config.yml <<EOF
+enable_attention_dp: true
+pytorch_backend_config:
+  enable_overlap_scheduler: true
+EOF
+
+srun -N 2 \
+  --ntasks 16 --ntasks-per-node=8 \
+  --mpi=pmix --gres=gpu:8 \
+  --container-image=nvcr.io/nvidia/tensorrt-llm:latest \
+  bash -c "trtllm-llmapi-launch trtllm-serve deepseek-ai/DeepSeek-V3 \
+    --max_batch_size 161 \
+    --max_num_tokens 1160 \
+    --tp_size 16 \
+    --ep_size 4 \
+    --kv_cache_free_gpu_memory_fraction 0.95 \
+    --config ./config.yml"
+```
+
+<Note>
+  `trtllm-llmapi-launch` is a wrapper script that handles MPI initialization for multi-node deployments.
+</Note>
+
+## gRPC Server Mode
+
+For high-performance use cases with external routers (e.g., sgl-router), use gRPC mode:
+
+```bash
+trtllm-serve meta-llama/Llama-3.1-8B-Instruct \
+  --grpc \
+  --port 50051
+```
+
+<Warning>
+  gRPC mode accepts **pre-tokenized** inputs and returns **raw token IDs**. It does not support `--tool_parser`, `--chat_template`, or disaggregated serving.
+</Warning>
+
+## Monitoring and Metrics
+
+### Health Endpoint
+
+```bash
+curl http://localhost:8000/health
+```
+
+### Metrics Endpoint
+
+Enable performance metrics in your config:
+
+```yaml
+enable_iter_perf_stats: true
+```
+
+Query runtime statistics:
+
+```bash
+curl http://localhost:8000/metrics
+```
+
+<Accordion title="Example Metrics Response">
+
+```json
+[
+  {
+    "gpuMemUsage": 76665782272,
+    "iter": 154,
+    "iterLatencyMS": 7.0,
+    "kvCacheStats": {
+      "allocNewBlocks": 3126,
+      "cacheHitRate": 0.00128,
+      "freeNumBlocks": 101253,
+      "maxNumBlocks": 101256,
+      "tokensPerBlock": 32,
+      "usedNumBlocks": 3
+    },
+    "numActiveRequests": 1
+  }
+]
+```
+
+</Accordion>
+
+<Warning>
+  Metrics are stored in a queue and **removed once retrieved**. Poll regularly if you need to retain metrics.
+</Warning>
+
+## Custom Tokenizers
+
+Use custom tokenizers for specialized models:
+
+```bash
+trtllm-serve deepseek-ai/DeepSeek-V3 \
+  --custom_tokenizer deepseek_v32
+```
+
+Or specify a Python import path:
+
+```bash
+trtllm-serve deepseek-ai/DeepSeek-V3 \
+  --custom_tokenizer tensorrt_llm.tokenizer.deepseek_v32.DeepseekV32Tokenizer
+```
+
+## Multimodal Models
+
+For vision-language models (VLMs), disable KV cache reuse:
+
+```yaml vlm-config.yaml
+kv_cache_config:
+  enable_block_reuse: false
+```
+
+```bash
+trtllm-serve Qwen/Qwen2-VL-7B-Instruct --config vlm-config.yaml
+```
+
+Send multimodal requests:
+
+```python
+from openai import OpenAI
+import base64
+
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="EMPTY")
+
+with open("image.jpg", "rb") as f:
+    image_b64 = base64.b64encode(f.read()).decode()
+
+response = client.chat.completions.create(
+    model="Qwen2-VL-7B-Instruct",
+    messages=[{
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "What's in this image?"},
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}}
+        ]
+    }]
+)
+
+print(response.choices[0].message.content)
+```
+
+## Production Best Practices
+
+<Steps>
+  <Step title="Use YAML configuration files">
+    Store configurations in version-controlled YAML files instead of long command lines.
+  </Step>
+  
+  <Step title="Enable KV cache reuse">
+    Set `enable_block_reuse: true` in `kv_cache_config` for improved throughput with repetitive prompts.
+  </Step>
+  
+  <Step title="Tune batch size and token limits">
+    Adjust `max_batch_size` and `max_num_tokens` based on your GPU memory and workload.
+  </Step>
+  
+  <Step title="Monitor metrics">
+    Enable `enable_iter_perf_stats` and poll `/metrics` to track GPU utilization and KV cache efficiency.
+  </Step>
+  
+  <Step title="Use custom model names">
+    Specify `--served_model_name` to expose a user-friendly model name in the API instead of the path.
+  </Step>
+</Steps>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="LLM API" icon="code" href="/deployment/llm-api">
+    Use the Python LLM API for programmatic access
+  </Card>
+  <Card title="Distributed Inference" icon="server" href="/deployment/distributed-inference">
+    Scale to multi-GPU and multi-node deployments
+  </Card>
+  <Card title="Production Guide" icon="rocket" href="/deployment/production">
+    Best practices for production deployments
+  </Card>
+  <Card title="Disaggregated Serving" icon="split" href="/deployment/distributed-inference#disaggregated-serving">
+    Optimize TTFT and TPOT independently
+  </Card>
+</CardGroup>

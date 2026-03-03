@@ -1,0 +1,646 @@
+---
+title: 'Production Deployment'
+description: 'Best practices for deploying TensorRT-LLM in production environments'
+---
+
+## Overview
+
+This guide covers best practices, performance tuning, monitoring, and scaling strategies for production TensorRT-LLM deployments.
+
+## Architecture Considerations
+
+### Choosing a Backend
+
+<CardGroup cols={3}>
+  <Card title="PyTorch Backend" icon="fire">
+    **Default choice**
+    - Best compatibility
+    - Active development
+    - Full feature support
+    - Easier debugging
+  </Card>
+  
+  <Card title="TensorRT Backend" icon="gauge">
+    **Maximum performance**
+    - Lowest latency
+    - Highest throughput
+    - Requires build step
+    - Limited to specific models
+  </Card>
+  
+  <Card title="AutoDeploy Backend" icon="wand-magic-sparkles">
+    **Experimental**
+    - Automatic optimization
+    - On-the-fly quantization
+    - Beta stability
+  </Card>
+</CardGroup>
+
+<Tip>
+  Start with **PyTorch backend** for development and production. Switch to **TensorRT backend** only if you need absolute maximum performance and your model is supported.
+</Tip>
+
+### Deployment Patterns
+
+<Tabs>
+  <Tab title="Single Server">
+    Best for:
+    - Low to medium traffic
+    - Development/testing
+    - Models under 70B parameters on single GPU
+    
+    ```bash
+    trtllm-serve meta-llama/Llama-3.1-8B-Instruct \
+      --max_batch_size 128 \
+      --max_num_tokens 8192
+    ```
+  </Tab>
+  
+  <Tab title="Load Balanced Fleet">
+    Best for:
+    - High traffic
+    - Horizontal scaling
+    - Fault tolerance
+    
+    Deploy multiple instances behind NGINX/HAProxy:
+    
+    ```bash
+    # Instance 1 (GPU 0)
+    CUDA_VISIBLE_DEVICES=0 trtllm-serve model --port 8001 &
+    
+    # Instance 2 (GPU 1)
+    CUDA_VISIBLE_DEVICES=1 trtllm-serve model --port 8002 &
+    
+    # Load balancer distributes requests
+    ```
+  </Tab>
+  
+  <Tab title="Disaggregated">
+    Best for:
+    - Long prompts + short outputs
+    - Optimizing TTFT and TPOT separately
+    - Large-scale deployments
+    
+    See [Distributed Inference](/deployment/distributed-inference#disaggregated-serving) for details.
+  </Tab>
+</Tabs>
+
+## Performance Tuning
+
+### Memory Management
+
+<Steps>
+  <Step title="Optimize KV cache allocation">
+    ```yaml config.yaml
+    kv_cache_config:
+      free_gpu_memory_fraction: 0.95  # Use 95% of free memory
+      enable_block_reuse: true        # Reuse cache blocks
+      tokens_per_block: 32            # Larger blocks = less overhead
+    ```
+    
+    <Warning>
+      Setting `free_gpu_memory_fraction` too high may cause OOM errors during traffic spikes.
+    </Warning>
+  </Step>
+  
+  <Step title="Enable FP8 KV cache">
+    ```yaml
+    kv_cache_config:
+      dtype: fp8  # 2x memory savings vs FP16
+    ```
+    
+    <Note>
+      FP8 KV cache requires Hopper GPUs (H100, H200) for best performance.
+    </Note>
+  </Step>
+  
+  <Step title="Monitor cache efficiency">
+    ```bash
+    curl http://localhost:8000/metrics | jq '.[] | .kvCacheStats'
+    ```
+    
+    Target metrics:
+    - **Cache hit rate**: >50% for similar prompts
+    - **Free blocks**: >10% of max blocks
+    - **Tokens per block**: 32 (default)
+  </Step>
+</Steps>
+
+### Batching Configuration
+
+```yaml config.yaml
+max_batch_size: 256        # Max concurrent requests
+max_num_tokens: 16384      # Max tokens across batch
+
+scheduler_config:
+  capacity_scheduler_policy: GUARANTEED_NO_EVICT
+  dynamic_batch_config:
+    enable_batch_size_tuning: true
+    enable_max_num_tokens_tuning: false
+    dynamic_batch_moving_average_window: 128
+```
+
+<Accordion title="Tuning Guidelines">
+
+| Workload | `max_batch_size` | `max_num_tokens` | Notes |
+|----------|------------------|------------------|-------|
+| Short prompts + outputs | 512 | 8192 | Maximize throughput |
+| Long prompts | 128 | 32768 | Prevent OOM |
+| Streaming responses | 256 | 16384 | Balance latency/throughput |
+| Mixed workload | 256 | 16384 | Safe defaults |
+
+</Accordion>
+
+### CUDA Graphs
+
+Enable CUDA graphs for 20-30% latency reduction on decode steps:
+
+```yaml
+cuda_graph_config:
+  enable_padding: true
+  batch_sizes: [1, 2, 4, 8, 16, 32, 64, 128]  # Pre-capture these sizes
+```
+
+<Warning>
+  CUDA graphs increase memory usage (~500MB per batch size). Reduce `batch_sizes` if memory-constrained.
+</Warning>
+
+### Overlap Scheduler
+
+Enable compute/communication overlap (PyTorch backend only):
+
+```yaml
+pytorch_backend_config:
+  enable_overlap_scheduler: true
+```
+
+<Tip>
+  Overlap scheduler can improve throughput by 10-15% for multi-GPU deployments.
+</Tip>
+
+## Monitoring and Observability
+
+### Metrics to Track
+
+<AccordionGroup>
+  <Accordion title="Request Metrics">
+    - **Time to First Token (TTFT)**: Prefill latency
+    - **Time Per Output Token (TPOT)**: Decode latency
+    - **Request throughput**: Requests/second
+    - **Token throughput**: Tokens/second
+    - **Queue time**: Time waiting in scheduler
+  </Accordion>
+  
+  <Accordion title="System Metrics">
+    - **GPU utilization**: Target >80%
+    - **GPU memory usage**: Monitor for OOM
+    - **KV cache hit rate**: Higher = better efficiency
+    - **Active requests**: Current concurrency
+    - **Batch sizes**: Average batch utilization
+  </Accordion>
+  
+  <Accordion title="Error Metrics">
+    - **Request failures**: HTTP 5xx errors
+    - **OOM errors**: KV cache exhaustion
+    - **Timeout errors**: Requests exceeding max wait time
+  </Accordion>
+</AccordionGroup>
+
+### Collecting Metrics
+
+<CodeGroup>
+
+```python Python Client
+import requests
+import time
+
+def monitor_metrics(interval=5):
+    while True:
+        response = requests.get("http://localhost:8000/metrics")
+        stats = response.json()
+        
+        for stat in stats:
+            print(f"Iter {stat['iter']}:")
+            print(f"  GPU Memory: {stat['gpuMemUsage'] / 1e9:.2f} GB")
+            print(f"  KV Cache Hit Rate: {stat['kvCacheStats']['cacheHitRate']:.2%}")
+            print(f"  Active Requests: {stat['numActiveRequests']}")
+            print(f"  Iteration Latency: {stat['iterLatencyMS']:.2f}ms")
+        
+        time.sleep(interval)
+
+monitor_metrics()
+```
+
+```bash cURL + jq
+#!/bin/bash
+
+while true; do
+  curl -s http://localhost:8000/metrics | jq -r '.[] | 
+    "Iter: \(.iter) | 
+     GPU: \(.gpuMemUsage / 1000000000 | round)GB | 
+     Cache Hit: \(.kvCacheStats.cacheHitRate * 100 | round)% | 
+     Active: \(.numActiveRequests)"'
+  sleep 5
+done
+```
+
+</CodeGroup>
+
+### OpenTelemetry Integration
+
+Export traces to observability platforms:
+
+```bash
+trtllm-serve meta-llama/Llama-3.1-8B-Instruct \
+  --otlp_traces_endpoint http://localhost:4318/v1/traces
+```
+
+<Note>
+  Requires OpenTelemetry Collector running. See [OpenTelemetry docs](https://opentelemetry.io/docs/collector/) for setup.
+</Note>
+
+## Scaling Strategies
+
+### Vertical Scaling (Single Node)
+
+<Steps>
+  <Step title="Use tensor parallelism for large models">
+    ```bash
+    # Split Llama-70B across 4 GPUs
+    trtllm-serve meta-llama/Llama-3.1-70B-Instruct \
+      --tp_size 4
+    ```
+  </Step>
+  
+  <Step title="Increase batch size and token limits">
+    ```yaml
+    max_batch_size: 512
+    max_num_tokens: 32768
+    kv_cache_config:
+      free_gpu_memory_fraction: 0.98
+    ```
+  </Step>
+  
+  <Step title="Enable all optimizations">
+    ```yaml
+    cuda_graph_config:
+      enable_padding: true
+    pytorch_backend_config:
+      enable_overlap_scheduler: true
+    kv_cache_config:
+      enable_block_reuse: true
+      dtype: fp8
+    ```
+  </Step>
+</Steps>
+
+### Horizontal Scaling (Multi-Instance)
+
+<CodeGroup>
+
+```nginx NGINX Config
+upstream trtllm_backend {
+    least_conn;  # Route to instance with fewest connections
+    server localhost:8001;
+    server localhost:8002;
+    server localhost:8003;
+    server localhost:8004;
+}
+
+server {
+    listen 80;
+    
+    location / {
+        proxy_pass http://trtllm_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        
+        # Timeouts for long generations
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+}
+```
+
+```yaml Docker Compose
+version: '3.8'
+
+services:
+  trtllm-1:
+    image: nvcr.io/nvidia/tensorrt-llm:latest
+    command: trtllm-serve meta-llama/Llama-3.1-8B-Instruct --port 8000
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0']
+              capabilities: [gpu]
+  
+  trtllm-2:
+    image: nvcr.io/nvidia/tensorrt-llm:latest
+    command: trtllm-serve meta-llama/Llama-3.1-8B-Instruct --port 8000
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['1']
+              capabilities: [gpu]
+  
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - trtllm-1
+      - trtllm-2
+```
+
+</CodeGroup>
+
+### Multi-Node Scaling
+
+For models >70B parameters, use multi-node deployment:
+
+```bash
+# config.yml
+cat > config.yml <<EOF
+enable_attention_dp: true
+pytorch_backend_config:
+  enable_overlap_scheduler: true
+EOF
+
+# Slurm deployment (2 nodes, 16 GPUs total)
+srun -N 2 \
+  --ntasks 16 --ntasks-per-node=8 \
+  --mpi=pmix --gres=gpu:8 \
+  --container-image=nvcr.io/nvidia/tensorrt-llm:latest \
+  bash -c "trtllm-llmapi-launch trtllm-serve deepseek-ai/DeepSeek-V3 \
+    --tp_size 16 \
+    --ep_size 4 \
+    --max_batch_size 161 \
+    --config ./config.yml"
+```
+
+## Security Best Practices
+
+<Steps>
+  <Step title="Disable trust_remote_code in production">
+    ```bash
+    trtllm-serve <model>  # trust_remote_code defaults to False
+    ```
+    
+    <Warning>
+      Only enable `--trust_remote_code` for models from trusted sources.
+    </Warning>
+  </Step>
+  
+  <Step title="Use authentication/authorization">
+    Deploy behind API gateway with auth:
+    
+    ```nginx
+    location /v1 {
+        auth_request /auth;
+        proxy_pass http://trtllm_backend;
+    }
+    
+    location = /auth {
+        internal;
+        proxy_pass http://auth-service/verify;
+    }
+    ```
+  </Step>
+  
+  <Step title="Rate limiting">
+    ```nginx
+    limit_req_zone $binary_remote_addr zone=api_limit:10m rate=10r/s;
+    
+    location /v1 {
+        limit_req zone=api_limit burst=20;
+        proxy_pass http://trtllm_backend;
+    }
+    ```
+  </Step>
+  
+  <Step title="Input validation">
+    Set reasonable limits:
+    
+    ```yaml
+    max_seq_len: 8192      # Prevent excessive memory use
+    max_tokens: 2048       # Limit output length
+    ```
+  </Step>
+</Steps>
+
+## High Availability
+
+### Health Checks
+
+```python
+import requests
+import time
+
+def health_check(url: str, timeout: int = 5) -> bool:
+    try:
+        response = requests.get(f"{url}/health", timeout=timeout)
+        return response.status_code == 200
+    except:
+        return False
+
+# Kubernetes liveness probe
+while True:
+    if not health_check("http://localhost:8000"):
+        print("Service unhealthy, restarting...")
+        # Trigger restart
+    time.sleep(30)
+```
+
+### Graceful Shutdown
+
+```python
+import signal
+import sys
+from tensorrt_llm import LLM
+
+llm = LLM(model="meta-llama/Llama-3.1-8B-Instruct")
+
+def shutdown_handler(signum, frame):
+    print("Shutting down gracefully...")
+    llm.shutdown()  # Finish in-flight requests
+    sys.exit(0)
+
+signal.signal(signal.SIGTERM, shutdown_handler)
+signal.signal(signal.SIGINT, shutdown_handler)
+
+# Start serving...
+```
+
+### Kubernetes Deployment
+
+```yaml trtllm-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trtllm-serve
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: trtllm
+  template:
+    metadata:
+      labels:
+        app: trtllm
+    spec:
+      containers:
+      - name: trtllm
+        image: nvcr.io/nvidia/tensorrt-llm:latest
+        command: ["trtllm-serve"]
+        args:
+          - "meta-llama/Llama-3.1-8B-Instruct"
+          - "--port=8000"
+          - "--config=/config/config.yaml"
+        resources:
+          limits:
+            nvidia.com/gpu: 1
+            memory: 32Gi
+          requests:
+            nvidia.com/gpu: 1
+            memory: 16Gi
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 60
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        volumeMounts:
+        - name: config
+          mountPath: /config
+      volumes:
+      - name: config
+        configMap:
+          name: trtllm-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: trtllm-service
+spec:
+  selector:
+    app: trtllm
+  ports:
+  - port: 80
+    targetPort: 8000
+  type: LoadBalancer
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Out of Memory (OOM) Errors">
+    **Symptoms**: Requests fail with CUDA OOM errors
+    
+    **Solutions**:
+    1. Reduce `max_batch_size` or `max_num_tokens`
+    2. Lower `free_gpu_memory_fraction` to 0.85
+    3. Enable FP8 KV cache: `kv_cache_config.dtype: fp8`
+    4. Disable CUDA graphs if enabled
+    5. Use tensor parallelism for larger models
+  </Accordion>
+  
+  <Accordion title="High Latency">
+    **Symptoms**: TTFT or TPOT higher than expected
+    
+    **Solutions**:
+    1. Enable CUDA graphs: `use_cuda_graph: true`
+    2. Enable overlap scheduler (PyTorch): `enable_overlap_scheduler: true`
+    3. Increase `max_num_tokens` to allow larger batches
+    4. Check GPU utilization (should be >80%)
+    5. Reduce `tokens_per_block` to 16 for short requests
+  </Accordion>
+  
+  <Accordion title="Low Throughput">
+    **Symptoms**: Requests/second below expectations
+    
+    **Solutions**:
+    1. Increase `max_batch_size`
+    2. Enable KV cache reuse: `enable_block_reuse: true`
+    3. Use async generation: `generate_async()`
+    4. Check queue time in metrics (should be less than 100ms)
+    5. Scale horizontally with load balancer
+  </Accordion>
+  
+  <Accordion title="Model Not Loading">
+    **Symptoms**: Server fails to start, model download issues
+    
+    **Solutions**:
+    1. Check HuggingFace token: `huggingface-cli login`
+    2. Pre-download model: `huggingface-cli download <model>`
+    3. Verify disk space (models can be 50GB+)
+    4. Check model compatibility with backend
+    5. Enable `--trust_remote_code` if using custom model code
+  </Accordion>
+</AccordionGroup>
+
+## Performance Checklist
+
+<Steps>
+  <Step title="Choose optimal backend">
+    ✅ PyTorch for compatibility, TensorRT for max performance
+  </Step>
+  
+  <Step title="Configure KV cache">
+    ✅ `free_gpu_memory_fraction: 0.95`
+    ✅ `enable_block_reuse: true`
+    ✅ `dtype: fp8` (on Hopper GPUs)
+  </Step>
+  
+  <Step title="Set batch limits">
+    ✅ `max_batch_size: 256` (adjust for GPU memory)
+    ✅ `max_num_tokens: 16384`
+  </Step>
+  
+  <Step title="Enable optimizations">
+    ✅ CUDA graphs
+    ✅ Overlap scheduler (PyTorch)
+    ✅ Dynamic batching
+  </Step>
+  
+  <Step title="Monitor metrics">
+    ✅ GPU utilization >80%
+    ✅ KV cache hit rate >50%
+    ✅ Queue time less than 100ms
+  </Step>
+  
+  <Step title="Scale appropriately">
+    ✅ Tensor parallelism for large models
+    ✅ Horizontal scaling for high traffic
+    ✅ Load balancer for multi-instance
+  </Step>
+</Steps>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Distributed Inference" icon="network-wired" href="/deployment/distributed-inference">
+    Multi-GPU and multi-node deployments
+  </Card>
+  <Card title="Benchmarking" icon="gauge" href="https://github.com/NVIDIA/TensorRT-LLM/blob/main/docs/source/developer-guide/perf-benchmarking.md">
+    Measure and optimize performance
+  </Card>
+  <Card title="Reference Configs" icon="file" href="https://github.com/NVIDIA/TensorRT-LLM/tree/main/examples/configs/database">
+    170+ optimized configurations
+  </Card>
+  <Card title="API Reference" icon="book" href="https://nvidia.github.io/TensorRT-LLM/llm-api/reference.html">
+    Complete configuration reference
+  </Card>
+</CardGroup>

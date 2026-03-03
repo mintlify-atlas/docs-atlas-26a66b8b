@@ -1,0 +1,269 @@
+---
+title: trtllm-serve
+description: Launch an OpenAI-compatible API server for TensorRT-LLM models
+---
+
+Launch an OpenAI-compatible API server for serving TensorRT-LLM models. Supports PyTorch, TensorRT, and AutoDeploy backends with both HTTP (REST) and gRPC protocols.
+
+## Usage
+
+```bash
+trtllm-serve MODEL [OPTIONS]
+```
+
+## Arguments
+
+<ParamField path="MODEL" type="string" required>
+  Model name, HuggingFace checkpoint path, or TensorRT engine path
+</ParamField>
+
+## Server Options
+
+<ParamField path="--host" type="string" default="localhost">
+  Hostname of the server
+</ParamField>
+
+<ParamField path="--port" type="integer" default="8000">
+  Port of the server
+</ParamField>
+
+<ParamField path="--backend" type="string" default="pytorch">
+  Backend to use for serving the model. Choices: `pytorch`, `tensorrt`, `trt` (alias for tensorrt), `_autodeploy`
+</ParamField>
+
+<ParamField path="--grpc" type="boolean" default="false">
+  Run gRPC server instead of OpenAI HTTP server. gRPC server accepts pre-tokenized requests and returns raw token IDs
+</ParamField>
+
+<ParamField path="--served_model_name" type="string">
+  The model name used in the API. If not specified, the model path is used. Useful when the model path is long or when you want to expose a custom name to clients
+</ParamField>
+
+## Tokenizer Options
+
+<ParamField path="--tokenizer" type="string">
+  Path or name of the tokenizer. Defaults to model path if not specified
+</ParamField>
+
+<ParamField path="--custom_tokenizer" type="string">
+  Custom tokenizer type: alias (e.g., 'deepseek_v32') or Python import path (e.g., 'tensorrt_llm.tokenizer.deepseek_v32.DeepseekV32Tokenizer')
+</ParamField>
+
+## Model Configuration
+
+<ParamField path="--max_batch_size" type="integer" default="8">
+  Maximum number of requests that the engine can schedule
+</ParamField>
+
+<ParamField path="--max_num_tokens" type="integer" default="2048">
+  Maximum number of batched input tokens after padding is removed in each batch
+</ParamField>
+
+<ParamField path="--max_seq_len" type="integer">
+  Maximum total length of one request, including prompt and outputs. If unspecified, the value is deduced from the model config
+</ParamField>
+
+<ParamField path="--max_beam_width" type="integer" default="1">
+  Maximum number of beams for beam search decoding
+</ParamField>
+
+## Parallelism Options
+
+<ParamField path="--tensor_parallel_size" type="integer" default="1">
+  Tensor parallelism size. Alias: `--tp_size`
+</ParamField>
+
+<ParamField path="--pipeline_parallel_size" type="integer" default="1">
+  Pipeline parallelism size. Alias: `--pp_size`
+</ParamField>
+
+<ParamField path="--context_parallel_size" type="integer" default="1">
+  Context parallelism size. Alias: `--cp_size`
+</ParamField>
+
+<ParamField path="--moe_expert_parallel_size" type="integer">
+  Expert parallelism size for MoE models. Alias: `--ep_size`
+</ParamField>
+
+<ParamField path="--moe_cluster_parallel_size" type="integer">
+  Expert cluster parallelism size. Alias: `--cluster_size`
+</ParamField>
+
+<ParamField path="--gpus_per_node" type="integer">
+  Number of GPUs per node. Defaults to automatic detection
+</ParamField>
+
+## Memory Options
+
+<ParamField path="--free_gpu_memory_fraction" type="float" default="0.9">
+  Free GPU memory fraction reserved for KV Cache, after allocating model weights and buffers. Alias: `--kv_cache_free_gpu_memory_fraction`
+</ParamField>
+
+<ParamField path="--kv_cache_dtype" type="string" default="auto">
+  KV cache quantization dtype for PyTorch backend. Choices: `auto`, `fp8`, `nvfp4`. 'auto' uses checkpoint/model metadata; explicit values force override
+</ParamField>
+
+## Advanced Options
+
+<ParamField path="--config" type="string">
+  Path to a YAML file that overwrites the parameters specified by trtllm-serve. Can be specified as either `--config` or `--extra_llm_api_options`
+</ParamField>
+
+<ParamField path="--trust_remote_code" type="boolean" default="false">
+  Flag for HuggingFace transformers to trust remote code
+</ParamField>
+
+<ParamField path="--revision" type="string">
+  The revision to use for the HuggingFace model (branch name, tag name, or commit id)
+</ParamField>
+
+<ParamField path="--num_postprocess_workers" type="integer" default="0">
+  Number of workers to postprocess raw responses to comply with OpenAI protocol
+</ParamField>
+
+<ParamField path="--enable_chunked_prefill" type="boolean" default="false">
+  Enable chunked prefill
+</ParamField>
+
+<ParamField path="--reasoning_parser" type="string">
+  Specify the parser for reasoning models
+</ParamField>
+
+<ParamField path="--tool_parser" type="string">
+  Specify the parser for tool models
+</ParamField>
+
+<ParamField path="--chat_template" type="string">
+  Specify a custom chat template. Can be a file path or one-liner template string
+</ParamField>
+
+<ParamField path="--custom_module_dirs" type="string" multiple>
+  Paths to custom module directories to import
+</ParamField>
+
+## Disaggregated Serving
+
+<ParamField path="--server_role" type="string">
+  Server role. Specify this value only if running in disaggregated mode
+</ParamField>
+
+<ParamField path="--metadata_server_config_file" type="string">
+  Path to metadata server config file for disaggregated serving
+</ParamField>
+
+<ParamField path="--disagg_cluster_uri" type="string">
+  URI of the disaggregated cluster
+</ParamField>
+
+## Observability
+
+<ParamField path="--otlp_traces_endpoint" type="string">
+  Target URL to which OpenTelemetry traces will be sent
+</ParamField>
+
+<ParamField path="--log_level" type="string" default="info">
+  The logging level. Choices: `verbose`, `info`, `warning`, `error`, `internal_error`
+</ParamField>
+
+## Multimodal Options
+
+<ParamField path="--media_io_kwargs" type="string">
+  Keyword arguments for media I/O (JSON string)
+</ParamField>
+
+<ParamField path="--extra_visual_gen_options" type="string">
+  Path to a YAML file with extra VISUAL_GEN model options (for diffusion models)
+</ParamField>
+
+## Runtime Behavior
+
+<ParamField path="--fail_fast_on_attention_window_too_large" type="boolean" default="false">
+  Exit with runtime error when attention window is too large to fit even a single sequence in the KV cache
+</ParamField>
+
+## Examples
+
+### Basic HTTP Server
+
+Serve a model from HuggingFace with default settings:
+
+```bash
+trtllm-serve meta-llama/Llama-3.1-8B-Instruct
+```
+
+### Custom Port and Backend
+
+Serve with TensorRT backend on a custom port:
+
+```bash
+trtllm-serve meta-llama/Llama-3.1-8B-Instruct \
+  --backend tensorrt \
+  --port 8080
+```
+
+### Multi-GPU Tensor Parallel
+
+Serve with 4-way tensor parallelism:
+
+```bash
+trtllm-serve meta-llama/Llama-3.1-70B-Instruct \
+  --tensor_parallel_size 4
+```
+
+### With Configuration File
+
+Use a YAML configuration file for advanced settings:
+
+```bash
+trtllm-serve meta-llama/Llama-3.1-8B-Instruct \
+  --config server_config.yaml
+```
+
+### gRPC Server
+
+Launch a gRPC server for pre-tokenized requests:
+
+```bash
+trtllm-serve meta-llama/Llama-3.1-8B-Instruct \
+  --grpc \
+  --port 50051
+```
+
+### Custom Model Name
+
+Serve with a custom model name for API responses:
+
+```bash
+trtllm-serve /path/to/local/model \
+  --served_model_name "my-custom-llama"
+```
+
+### High-Performance Configuration
+
+Optimize for throughput with increased batch size and memory allocation:
+
+```bash
+trtllm-serve meta-llama/Llama-3.1-8B-Instruct \
+  --backend tensorrt \
+  --max_batch_size 256 \
+  --max_num_tokens 8192 \
+  --free_gpu_memory_fraction 0.95 \
+  --enable_chunked_prefill
+```
+
+### Multi-Node Serving
+
+Serve across multiple nodes with tensor and pipeline parallelism:
+
+```bash
+trtllm-serve meta-llama/Llama-3.1-70B-Instruct \
+  --tensor_parallel_size 4 \
+  --pipeline_parallel_size 2 \
+  --gpus_per_node 8
+```
+
+## Related Commands
+
+- [trtllm-bench](/cli/trtllm-bench) - Benchmark model performance
+- [trtllm-build](/cli/trtllm-build) - Build TensorRT engines
+- [trtllm-eval](/cli/trtllm-eval) - Evaluate model accuracy

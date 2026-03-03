@@ -1,0 +1,354 @@
+---
+title: 'CI/CD Overview'
+description: 'Continuous integration pipeline, testing strategy, and Jenkins integration'
+---
+
+## Overview
+
+TensorRT-LLM uses a Jenkins-based CI/CD system that runs unit tests and integration tests across multiple GPU configurations. This page explains how the CI is organized, how tests map to Jenkins stages, and how to trigger specific test stages.
+
+## CI Pipelines
+
+TensorRT-LLM has two main CI pipelines:
+
+<CardGroup cols={2}>
+  <Card title="Merge-Request Pipeline" icon="code-pull-request">
+    Runs unit tests and pre-merge integration tests when `/bot run` is commented on a PR
+  </Card>
+  <Card title="Post-Merge Pipeline" icon="code-merge">
+    Runs comprehensive integration tests across all GPU configurations after PR merge
+  </Card>
+</CardGroup>
+
+### Triggering CI
+
+Pull requests do not automatically trigger CI. Developers must comment on the PR to start testing:
+
+```bash
+# Run standard pre-merge pipeline
+/bot run
+
+# Run specific stages only
+/bot run --stage-list "stage-A,stage-B"
+
+# Add extra stages to pre-merge set
+/bot run --extra-stage "stage-A,stage-B"
+
+# Run all stages even if earlier ones fail (use sparingly)
+/bot run --disable-fail-fast
+
+# Include AutoDeploy stages
+/bot run --extra-stage "DGX_B200-4_GPUs-AutoDeploy-1, DGX_H100-4_GPUs-AutoDeploy-1"
+```
+
+<Warning>
+  Avoid habitually using `--disable-fail-fast` as it wastes scarce hardware resources. The CI system automatically reuses successful test stages when commits remain unchanged. Overusing this flag keeps failed pipelines consuming resources (like DGX-H100s), increasing queue backlogs and reducing team efficiency.
+</Warning>
+
+For a full list of available commands, post `/bot help` as a PR comment.
+
+## Testing Strategy
+
+### Unit Tests
+
+Unit tests are located in `tests/unittest/` and run during the merge-request pipeline. They are invoked from `jenkins/L0_MergeRequest.groovy` and do not require mapping to specific hardware stages.
+
+**Running unit tests locally:**
+
+```bash
+# Run all unit tests
+pytest tests/unittest/
+
+# Run specific test file
+pytest tests/unittest/llmapi/test_llm_args.py
+
+# Run tests matching pattern
+pytest tests/unittest -k "test_llm_args"
+```
+
+### Integration Tests
+
+Integration tests are defined in YAML files under `tests/integration/test_lists/test-db/`. Most files are named after the GPU or configuration they run on:
+
+- `l0_a100.yml` - Tests for A100 GPUs
+- `l0_h100.yml` - Tests for H100 GPUs
+- `l0_a10.yml` - Tests for A10 GPUs
+- `l0_sanity_check.yml` - Tests that run on multiple hardware types
+
+**YAML structure:**
+
+```yaml
+terms:
+  stage: post_merge  # or pre_merge
+  backend: triton     # pytorch, tensorrt, or triton
+tests:
+  - triton_server/test_triton.py::test_gpt_ib_ptuning[gpt-ib-ptuning]
+```
+
+Key fields:
+- `stage`: Either `pre_merge` or `post_merge`
+- `backend`: `pytorch`, `tensorrt`, or `triton`
+- `tests`: List of pytest test paths
+
+**Running integration tests locally:**
+
+<Note>
+  Integration tests require GPU access and the `LLM_MODELS_ROOT` environment variable set to the path containing model weights.
+</Note>
+
+```bash
+# Set model root
+export LLM_MODELS_ROOT=/path/to/models
+
+# Run integration tests
+pytest tests/integration/defs/...
+```
+
+### API Stability Tests
+
+Located in `tests/api_stability/`, these tests protect committed API signatures. Changes to LLM API signatures will fail these tests and require code owner review.
+
+## Jenkins Integration
+
+### Pipeline Definitions
+
+The CI pipelines are defined in Groovy scripts:
+
+- **`jenkins/L0_MergeRequest.groovy`**: Merge-request pipeline (pre-merge tests)
+- **`jenkins/L0_Test.groovy`**: Post-merge pipeline (comprehensive testing)
+
+### Stage Mapping
+
+`jenkins/L0_Test.groovy` maps Jenkins stage names to YAML test files. For example:
+
+```groovy
+"A100X-Triton-[Post-Merge]-1": ["a100x", "l0_a100", 1, 2],
+"A100X-Triton-[Post-Merge]-2": ["a100x", "l0_a100", 2, 2],
+```
+
+Array elements:
+1. GPU type (`a100x`)
+2. YAML file without extension (`l0_a100`)
+3. Shard index (1)
+4. Total number of shards (2)
+
+Only tests with the corresponding `stage` value from the YAML file are selected when a stage runs.
+
+## Finding the Stage for a Test
+
+### Manual Method
+
+1. Locate the test in the appropriate YAML file under `tests/integration/test_lists/test-db/`
+2. Note its `stage` and `backend` values
+3. Search `jenkins/L0_Test.groovy` for a stage whose YAML file matches
+4. Ensure the stage name contains `[Post-Merge]` if the test has `stage: post_merge`
+
+### Using test_to_stage_mapping.py
+
+The helper script `scripts/test_to_stage_mapping.py` automates stage lookup:
+
+```bash
+# Find stages that run a specific test
+python scripts/test_to_stage_mapping.py \
+  --tests "triton_server/test_triton.py::test_gpt_ib_ptuning[gpt-ib-ptuning]"
+
+# Find stages using pattern matching
+python scripts/test_to_stage_mapping.py --tests gpt_ib_ptuning
+
+# List all tests in a specific stage
+python scripts/test_to_stage_mapping.py --stages A100X-Triton-Post-Merge-1
+
+# Read tests from a file
+python scripts/test_to_stage_mapping.py --test-list my_tests.txt
+python scripts/test_to_stage_mapping.py --test-list my_tests.yml
+```
+
+<Tip>
+  Patterns are matched by substring, so partial test names work. When providing tests on the command line, quote each test string so the shell doesn't interpret `[` and `]` as globs.
+</Tip>
+
+**Example workflow:**
+
+```bash
+# Find which stages run a test
+python scripts/test_to_stage_mapping.py --tests "test_gpt_ib_ptuning"
+
+# Output:
+# A100X-Triton-[Post-Merge]-1
+# A100X-Triton-[Post-Merge]-2
+
+# Run those stages on your PR
+/bot run --stage-list "A100X-Triton-[Post-Merge]-1,A100X-Triton-[Post-Merge]-2"
+```
+
+## Waiving Tests
+
+Sometimes tests are known to fail due to bugs or unsupported features. Instead of removing them from YAML files, add them to `tests/integration/test_lists/waives.txt`.
+
+The CI passes this file to pytest via `--waives-file`, automatically skipping listed tests.
+
+**Format:**
+
+```text
+test_path::test_name SKIP (reason)
+full:GPU_TYPE/test_path::test_name SKIP (reason)
+```
+
+**Examples:**
+
+```text
+# General waive with bug link
+examples/test_openai.py::test_llm_openai_triton_1gpu SKIP (https://nvbugspro.nvidia.com/bug/4963654)
+
+# GPU-specific waive
+full:GH200/examples/test_qwen2audio.py::test_llm_qwen2audio_single_gpu[qwen2_audio_7b_instruct] SKIP (arm is not supported)
+```
+
+<Info>
+  Changes to `waives.txt` should include a bug link or brief explanation so other developers understand why the test is disabled.
+</Info>
+
+## Retrieving Test Failures from CI
+
+CI tests run on internal NVIDIA Jenkins infrastructure (`blossom-ci`). To retrieve failed test cases:
+
+### Step 1: Get Jenkins Build Number
+
+Extract the `L0_MergeRequest_PR` build number from PR comments:
+
+```bash
+PR_NUM=<pr_number>
+BUILD_NUM=$(gh api "repos/NVIDIA/TensorRT-LLM/issues/${PR_NUM}/comments" --jq \
+  '[.[] | select(.user.login == "tensorrt-cicd") | select(.body | test("L0_MergeRequest_PR"))] | last | .body' \
+  | grep -oP 'L0_MergeRequest_PR/\K\d+')
+```
+
+### Step 2: Query Jenkins testReport API
+
+Resolve the Jenkins base URL and fetch failure data:
+
+```bash
+JENKINS_BASE="$(curl -skI 'https://nv/trt-llm-cicd' 2>/dev/null | \
+  grep -i '^location:' | sed 's/^[Ll]ocation: *//;s/[[:space:]]*$//')job/main/job/L0_MergeRequest_PR"
+
+curl -s "${JENKINS_BASE}/${BUILD_NUM}/testReport/api/json" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+print(f'Summary: {data[\"passCount\"]} passed, {data[\"failCount\"]} failed, {data[\"skipCount\"]} skipped')
+failed = []
+for suite in data.get('suites', []):
+    for case in suite.get('cases', []):
+        if case.get('status') in ('FAILED', 'REGRESSION'):
+            failed.append(case)
+if not failed:
+    print('No test failures!')
+else:
+    print(f'Failed tests ({len(failed)}):')
+    for f in failed:
+        print(f'  - {f[\"className\"]}.{f[\"name\"]}')
+        err = (f.get('errorDetails') or '')[:200]
+        if err:
+            print(f'    Error: {err}')
+"
+```
+
+### Step 3: Get Full Output for Specific Failure
+
+If `errorStackTrace` is incomplete (common for subprocess errors), fetch `stdout` and `stderr`:
+
+```bash
+curl -s "${JENKINS_BASE}/${BUILD_NUM}/testReport/api/json" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+for suite in data.get('suites', []):
+    for case in suite.get('cases', []):
+        if case.get('status') in ('FAILED', 'REGRESSION'):
+            name = f'{case[\"className\"]}.{case[\"name\"]}'
+            if '<search_term>' in name:
+                print(f'=== {name} ===')
+                print('--- Error ---')
+                print(case.get('errorDetails', ''))
+                print('--- Stack Trace ---')
+                print(case.get('errorStackTrace', ''))
+                print('--- Stdout (last 3000 chars) ---')
+                print((case.get('stdout') or '')[-3000:])
+                print('--- Stderr (last 3000 chars) ---')
+                print((case.get('stderr') or '')[-3000:])
+                break
+"
+```
+
+**Available fields per failed test:**
+- `className`, `name`: Test identifier
+- `status`: `FAILED` or `REGRESSION`
+- `errorDetails`: Error message
+- `errorStackTrace`: Full stack trace (may be incomplete)
+- `stdout`, `stderr`: Full test output (check when stack trace is insufficient)
+
+## Best Practices
+
+### Triggering Post-Merge Tests
+
+When you only need to verify specific post-merge tests, avoid the heavy `/bot run --post-merge` command:
+
+<Tabs>
+  <Tab title="Specific Stages Only">
+    ```bash
+    /bot run --stage-list "stage-A,stage-B"
+    ```
+    Runs **only** the listed stages.
+  </Tab>
+  <Tab title="Add to Pre-Merge">
+    ```bash
+    /bot run --extra-stage "stage-A,stage-B"
+    ```
+    Adds stages on top of the default pre-merge set.
+  </Tab>
+</Tabs>
+
+Being selective keeps CI turnaround fast and conserves hardware resources.
+
+### Avoiding Unnecessary --disable-fail-fast
+
+<Warning>
+  The CI system automatically reuses successful test stages when commits remain unchanged, and subsequent `/bot run` commands only retry failed stages. Using `--disable-fail-fast` unnecessarily:
+  
+  - Wastes scarce hardware resources
+  - Keeps failed pipelines consuming DGX-H100s
+  - Increases queue backlogs for all developers
+  - Reduces team efficiency
+</Warning>
+
+Only use `--disable-fail-fast` when explicitly needed.
+
+## Test Locations Reference
+
+<CardGroup cols={2}>
+  <Card title="Unit Tests" icon="flask">
+    `tests/unittest/`
+    
+    Run in pre-merge CI, some require GPU
+  </Card>
+  <Card title="API Stability" icon="shield-check">
+    `tests/api_stability/`
+    
+    Protects API signatures, requires code owner review
+  </Card>
+  <Card title="Integration Tests" icon="network-wired">
+    `tests/integration/defs/`
+    
+    Requires GPU + `LLM_MODELS_ROOT`
+  </Card>
+  <Card title="Test Lists" icon="list">
+    `tests/integration/test_lists/test-db/`
+    
+    Per-GPU YAML files (`l0_a10.yml`, `l0_h100.yml`, etc.)
+  </Card>
+</CardGroup>
+
+## Related Pages
+
+- [Contributing Guide](/developer/contributing)
+- [Coding Guidelines](/developer/coding-guidelines)
+- [Performance Benchmarking](/developer/benchmarking)
+- [Performance Analysis](/developer/performance-analysis)
