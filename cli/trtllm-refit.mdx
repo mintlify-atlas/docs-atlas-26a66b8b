@@ -1,0 +1,154 @@
+---
+title: "trtllm-refit"
+description: "Update TensorRT engine weights from checkpoints"
+---
+
+The `trtllm-refit` command updates the weights in a pre-built TensorRT engine with new weights from a checkpoint, without rebuilding the engine from scratch.
+
+## Overview
+
+Refitting allows you to:
+
+- Update a TensorRT engine with fine-tuned weights
+- Quickly iterate on model weights without engine rebuilding
+- Apply LoRA or other parameter-efficient fine-tuning results
+
+This is significantly faster than rebuilding the entire engine, as it only updates the weight values while preserving the engine structure.
+
+## Command Syntax
+
+```bash
+trtllm-refit \
+  --engine_dir <engine_directory> \
+  --checkpoint_dir <checkpoint_directory> \
+  --refit_engine_dir <output_directory>
+```
+
+## Arguments
+
+<ParamField path="--engine_dir" type="string" required>
+  Path to the directory containing the original TensorRT engines (`rank*.engine` files)
+</ParamField>
+
+<ParamField path="--checkpoint_dir" type="string" required>
+  Path to the checkpoint directory with new weights to refit into the engine
+</ParamField>
+
+<ParamField path="--refit_engine_dir" type="string" required>
+  Output directory for the refitted engines
+</ParamField>
+
+## How Refitting Works
+
+1. **Load Engine**: Deserialize the existing TensorRT engine
+2. **Load Checkpoint**: Load new weights from the checkpoint directory
+3. **Preprocess Weights**: Apply any necessary weight transformations (fusion, quantization, etc.)
+4. **Refit**: Update refittable weights in the engine
+5. **Save**: Serialize the refitted engine to the output directory
+
+## Refittable Weights
+
+Only certain weights can be refitted:
+
+- Attention weights (QKV, output projection)
+- MLP weights (gate, up, down projections)
+- Layer normalization parameters
+
+Structural weights (embeddings, position encodings) are typically not refittable and require engine rebuilding if changed.
+
+## Examples
+
+### Refit Engine with Fine-Tuned Weights
+
+```bash
+# Original engine
+trtllm-build \
+  --checkpoint_dir ./llama-7b-base \
+  --output_dir ./engines/base
+
+# Fine-tune model (creates new checkpoint)
+# ... training process ...
+
+# Refit engine with fine-tuned weights
+trtllm-refit \
+  --engine_dir ./engines/base \
+  --checkpoint_dir ./llama-7b-finetuned \
+  --refit_engine_dir ./engines/finetuned
+```
+
+### Update with LoRA Weights
+
+```bash
+# Apply LoRA adapter weights to existing engine
+trtllm-refit \
+  --engine_dir ./engines/base-model \
+  --checkpoint_dir ./lora-checkpoint \
+  --refit_engine_dir ./engines/lora-adapted
+```
+
+## Performance Considerations
+
+<Note>
+  **Refitting is much faster than rebuilding**: Refitting typically takes seconds to minutes, while building a new engine can take 10-30 minutes depending on model size.
+</Note>
+
+<Warning>
+  **Not all weights are refittable**: If your checkpoint modifies non-refittable weights (e.g., vocabulary size, hidden dimensions), you must rebuild the engine with `trtllm-build`.
+</Warning>
+
+## Troubleshooting
+
+<Accordion title="Missing Refittable Weights">
+  **Error**: `Missing refittable weights from checkpoint`
+  
+  **Solution**: Ensure the checkpoint contains all weights present in the original engine. The checkpoint structure must match the engine.
+</Accordion>
+
+<Accordion title="Weight Shape Mismatch">
+  **Error**: `Failed to refit weight: shape mismatch`
+  
+  **Solution**: The checkpoint weights must have the same shapes as the original engine. Structural changes require rebuilding with `trtllm-build`.
+</Accordion>
+
+<Accordion title="Uninitialized Weight">
+  **Error**: `Failed because weight is not initialized in model`
+  
+  **Solution**: Verify the checkpoint is complete and all weight files are present.
+</Accordion>
+
+## Workflow Example
+
+Complete workflow for fine-tuning and refitting:
+
+```bash
+# 1. Build initial engine
+trtllm-build \
+  --checkpoint_dir ./base-model \
+  --output_dir ./engines/v1
+
+# 2. Deploy and serve
+trtllm-serve ./engines/v1
+
+# 3. Fine-tune model (creates new checkpoint)
+python finetune.py --output ./finetuned-checkpoint
+
+# 4. Refit engine with fine-tuned weights  
+trtllm-refit \
+  --engine_dir ./engines/v1 \
+  --checkpoint_dir ./finetuned-checkpoint \
+  --refit_engine_dir ./engines/v2
+
+# 5. Deploy updated engine
+trtllm-serve ./engines/v2
+```
+
+## Related Commands
+
+<CardGroup cols={2}>
+  <Card title="trtllm-build" icon="hammer" href="/cli/trtllm-build">
+    Build TensorRT engines from checkpoints
+  </Card>
+  <Card title="trtllm-prune" icon="scissors" href="/cli/trtllm-prune">
+    Prune checkpoint weights
+  </Card>
+</CardGroup>

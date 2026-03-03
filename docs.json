@@ -96,7 +96,9 @@
               "cli/trtllm-serve",
               "cli/trtllm-bench",
               "cli/trtllm-eval",
-              "cli/trtllm-build"
+              "cli/trtllm-build",
+              "cli/trtllm-prune",
+              "cli/trtllm-refit"
             ]
           },
           {

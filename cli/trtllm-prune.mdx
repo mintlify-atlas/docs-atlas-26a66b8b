@@ -1,0 +1,114 @@
+---
+title: "trtllm-prune"
+description: "Prune TensorRT-LLM checkpoints to reduce size"
+---
+
+The `trtllm-prune` command removes weights from TensorRT-LLM checkpoints, useful for reducing checkpoint size during testing or creating lightweight checkpoint skeletons.
+
+## Overview
+
+Pruning creates a checkpoint with empty weight tensors while preserving the checkpoint structure and metadata. This is useful for:
+
+- Testing checkpoint loading without full model weights
+- Reducing storage space for checkpoint distribution
+- Creating lightweight checkpoint templates
+
+## Command Syntax
+
+```bash
+trtllm-prune --checkpoint_dir <input_dir> --out_dir <output_dir> [options]
+```
+
+## Required Arguments
+
+<ParamField path="--checkpoint_dir" type="string" required>
+  Path to the input TensorRT-LLM checkpoint directory containing `config.json` and `rank*.safetensors` files
+</ParamField>
+
+<ParamField path="--out_dir" type="string" required>
+  Output directory for the pruned checkpoint
+</ParamField>
+
+## Optional Arguments
+
+<ParamField path="--prune_all" type="boolean" default="false">
+  Remove all weights in the checkpoint. If not set, only prunable weights (attention QKV, projection, MLP weights) are removed.
+</ParamField>
+
+## Prunable Weights
+
+By default, the following weight types are pruned:
+
+- `attention.qkv.weight` - Query, Key, Value projection weights
+- `attention.proj.weight` - Attention output projection
+- `mlp.fc.weight` - MLP fully connected layer
+- `mlp.proj.weight` - MLP projection layer
+- `mlp.gate.weight` - MLP gate weights (for gated activations)
+
+Non-prunable weights (embeddings, normalization layers, etc.) are preserved unless `--prune_all` is specified.
+
+## Examples
+
+### Prune Specific Weights
+
+```bash
+trtllm-prune \
+  --checkpoint_dir ./llama-7b-checkpoint \
+  --out_dir ./llama-7b-pruned
+```
+
+This creates a pruned checkpoint with attention and MLP weights removed but embedding and normalization weights preserved.
+
+### Prune All Weights
+
+```bash
+trtllm-prune \
+  --checkpoint_dir ./llama-7b-checkpoint \
+  --out_dir ./llama-7b-skeleton \
+  --prune_all
+```
+
+This removes all weights, creating a minimal checkpoint skeleton.
+
+## Output Structure
+
+The pruned checkpoint maintains the same structure as the input:
+
+```
+output_dir/
+├── config.json          # Model configuration (with is_pruned: true)
+├── rank0.safetensors    # Pruned weights for rank 0
+├── rank1.safetensors    # Pruned weights for rank 1 (if multi-GPU)
+└── ...
+```
+
+The `config.json` file is updated with `"is_pruned": true` to indicate the checkpoint has been pruned.
+
+## Use Cases
+
+<Accordion title="Testing Checkpoint Loading">
+  Create lightweight checkpoints to test model loading logic without requiring full model weights:
+  
+  ```bash
+  trtllm-prune --checkpoint_dir ./original --out_dir ./test-ckpt
+  ```
+</Accordion>
+
+<Accordion title="Checkpoint Distribution">
+  Distribute checkpoint structure without weights for testing or validation purposes.
+</Accordion>
+
+<Accordion title="Storage Optimization">
+  Reduce storage requirements for intermediate checkpoints during development.
+</Accordion>
+
+## Related Commands
+
+<CardGroup cols={2}>
+  <Card title="trtllm-build" icon="hammer" href="/cli/trtllm-build">
+    Build TensorRT engines from checkpoints
+  </Card>
+  <Card title="trtllm-refit" icon="wrench" href="/cli/trtllm-refit">
+    Update engine weights from checkpoints
+  </Card>
+</CardGroup>
